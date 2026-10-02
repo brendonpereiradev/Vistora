@@ -1,6 +1,7 @@
+param([string]$OutputDirectory)
 . "$PSScriptRoot\Common.ps1"
 $taskDotnet = Get-VistoraDotnet
-$taskReleaseDir = Join-Path $taskProjectRoot 'output\release'
+$taskReleaseDir = if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $taskProjectRoot 'output\release' }
 $taskAppDir = Join-Path $taskReleaseDir 'Vistora'
 New-Item -ItemType Directory -Force -Path $taskAppDir | Out-Null
 & $taskDotnet publish (Join-Path $taskProjectRoot 'src\Vistora.Desktop\Vistora.Desktop.csproj') -c Release -r win-x64 --self-contained true -o $taskAppDir

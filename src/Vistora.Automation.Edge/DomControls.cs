@@ -2,12 +2,16 @@ using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Text;
 using Microsoft.Playwright;
+using Vistora.Core;
 
 namespace Vistora.Automation.Edge;
 
 // Toda leitura e interação ocorre no documento exibido pelo navegador.
-internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string> overrides)
+internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string> overrides, DiagnosticAttempt? diagnostics = null)
 {
+    private readonly Dictionary<string, int> candidateCounts = [];
+    private void Lookup(string key, string strategy, int count) => diagnostics?.Event("control.lookup", "Controle procurado.",
+        DiagnosticLevel.Debug, new() { ["controlKey"] = key, ["strategy"] = strategy, ["count"] = count });
     public static string Normalize(string text) => Regex.Replace(text, @"\s+", " ").Trim();
     internal static string NormalizePersonName(string name) => new(Normalize(name).Normalize(NormalizationForm.FormD)
         .Where(c => CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark).ToArray());
@@ -16,22 +20,33 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
 
     public async Task<ILocator> FieldAsync(string key, string[] names, ILocator? scope = null)
     {
-        return await TryFieldAsync(key, names, scope) ?? throw new InvalidOperationException($"Não foi possível identificar o campo “{names[0]}”. Confira a página do Jira e o diagnóstico da execução.");
+        var field = await TryFieldAsync(key, names, scope);
+        if (field is not null) return field;
+        var count = candidateCounts.GetValueOrDefault(key);
+        var code = count > 1 ? "FIELD_AMBIGUOUS" : "FIELD_NOT_FOUND";
+        diagnostics?.Event("control.missing", "Campo não identificado de forma única.", DiagnosticLevel.Warning,
+            new() { ["controlKey"] = key, ["count"] = count }, errorCode: code);
+        var error = new InvalidOperationException($"Não foi possível identificar o campo “{names[0]}”. Confira a página do Jira e o diagnóstico da execução.");
+        error.Data["DiagnosticCode"] = code; throw error;
     }
 
     public async Task<ILocator?> TryFieldAsync(string key, string[] names, ILocator? scope = null)
     {
+        candidateCounts[key] = 0;
         if (overrides.TryGetValue(key, out var selector))
         {
             var configured = (scope ?? page.Locator("body")).Locator(selector).Filter(new() { Visible = true });
+            var count = await configured.CountAsync(); candidateCounts[key] = count; Lookup(key, "override", count);
             return await IsUniqueVisibleAsync(configured) ? configured : null;
         }
         foreach (var name in names)
         {
             var labelled = (scope is null ? page.GetByLabel(LabelPattern(name)) : scope.GetByLabel(LabelPattern(name))).Filter(new() { Visible = true });
+            var count = await labelled.CountAsync(); candidateCounts[key] = Math.Max(candidateCounts[key], count); Lookup(key, "label", count);
             if (await IsUniqueVisibleAsync(labelled)) return labelled;
             var textbox = scope is null ? page.GetByRole(AriaRole.Textbox, new() { NameRegex = LabelPattern(name) })
                 : scope.GetByRole(AriaRole.Textbox, new() { NameRegex = LabelPattern(name) });
+            Lookup(key, "role", await textbox.CountAsync());
             if (await IsUniqueVisibleAsync(textbox)) return textbox;
             var label = (scope is null ? page.GetByText(LabelPattern(name)) : scope.GetByText(LabelPattern(name))).Filter(new() { Visible = true });
             if (await label.CountAsync() != 1) continue;
@@ -42,6 +57,7 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
                 var controls = ancestor.Locator("input:not([type=hidden]), textarea, select, [contenteditable=true], [role=combobox]").Filter(new() { Visible = true });
                 // Um combobox pode conter seu próprio input; preferir o controle editável.
                 var inputs = controls.Filter(new() { HasNot = page.Locator("input,textarea,[contenteditable=true]") });
+                Lookup(key, "ancestor", await inputs.CountAsync());
                 if (await IsUniqueVisibleAsync(inputs)) return inputs;
                 if (await IsUniqueVisibleAsync(controls)) return controls;
             }
@@ -58,7 +74,10 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
         await Task.Delay(400);
         var tag = await field.EvaluateAsync<string>("e => e.tagName.toLowerCase()");
         var actual = tag is "input" or "textarea" ? await field.InputValueAsync() : await field.InnerTextAsync();
-        if (Normalize(actual) != Normalize(value)) throw new InvalidOperationException($"O preenchimento de “{labels[0]}” não foi confirmado.");
+        var matches = Normalize(actual) == Normalize(value);
+        diagnostics?.Event("control.filled", "Preenchimento conferido.", matches ? DiagnosticLevel.Debug : DiagnosticLevel.Warning,
+            new() { ["controlKey"] = key, ["matches"] = matches });
+        if (!matches) throw new InvalidOperationException($"O preenchimento de “{labels[0]}” não foi confirmado.");
     }
 
     public async Task ChooseAsync(string key, string[] labels, string query, Regex exactOption, string expected, ILocator? scope = null)
@@ -68,6 +87,7 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
         if (tag == "select")
         {
             await field.SelectOptionAsync(new SelectOptionValue { Label = expected });
+            diagnostics?.Event("control.selected", "Opção selecionada.", DiagnosticLevel.Debug, new() { ["controlKey"] = key });
             return;
         }
         // Os comboboxes do Jira cobrem o input com o valor selecionado. Focar o input
@@ -85,6 +105,7 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
         await option.First.WaitForAsync(new() { State = WaitForSelectorState.Visible });
         option = await UniqueAsync(option, expected);
         await option.ClickAsync();
+        diagnostics?.Event("control.selected", "Opção selecionada.", DiagnosticLevel.Debug, new() { ["controlKey"] = key });
         var selectionDeadline = DateTimeOffset.UtcNow.AddSeconds(5);
         do
         {
@@ -106,7 +127,13 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
     }
 
     public async Task<string> ValueAsync(string key, string[] names)
-        => await TryValueAsync(key, names) ?? throw new InvalidOperationException($"Não foi possível conferir “{names[0]}” na página do chamado.");
+    {
+        var value = await TryValueAsync(key, names);
+        if (value is not null) return value;
+        diagnostics?.Event("control.value_missing", "Valor não encontrado para conferência.", DiagnosticLevel.Warning,
+            new() { ["controlKey"] = key }, errorCode: "FIELD_NOT_FOUND");
+        throw new InvalidOperationException($"Não foi possível conferir “{names[0]}” na página do chamado.");
+    }
 
     public async Task<string?> TryValueAsync(string key, string[] names)
     {
@@ -140,6 +167,7 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
         if (overrides.TryGetValue(key, out var selector))
         {
             await (await UniqueAsync((scope ?? page.Locator("body")).Locator(selector), names[0])).ClickAsync();
+            diagnostics?.Event("action.clicked", "Clique executado; o resultado ainda requer conferência.", details: new() { ["controlKey"] = key, ["strategy"] = "override" }, outcome: "clicked");
             return;
         }
         foreach (var name in names)
@@ -147,11 +175,15 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
             foreach (var role in new[] { AriaRole.Button, AriaRole.Link, AriaRole.Menuitem })
             {
                 var locator = scope is null ? page.GetByRole(role, new() { Name = name, Exact = true }) : scope.GetByRole(role, new() { Name = name, Exact = true });
-                if (await IsUniqueVisibleAsync(locator)) { await locator.ClickAsync(); return; }
+                var count = await locator.CountAsync(); Lookup(key, role.ToString(), count);
+                if (await IsUniqueVisibleAsync(locator))
+                { await locator.ClickAsync(); diagnostics?.Event("action.clicked", "Clique executado; o resultado ainda requer conferência.", details: new() { ["controlKey"] = key }, outcome: "clicked"); return; }
             }
             var text = (scope is null ? page.GetByText(name, new() { Exact = true }) : scope.GetByText(name, new() { Exact = true })).Filter(new() { Visible = true });
-            if (await IsUniqueVisibleAsync(text)) { await text.ClickAsync(); return; }
+            if (await IsUniqueVisibleAsync(text))
+            { await text.ClickAsync(); diagnostics?.Event("action.clicked", "Clique executado; o resultado ainda requer conferência.", details: new() { ["controlKey"] = key }, outcome: "clicked"); return; }
         }
+        diagnostics?.Event("control.action_missing", "Ação indisponível na página.", DiagnosticLevel.Warning, new() { ["controlKey"] = key }, errorCode: "FIELD_NOT_FOUND");
         throw new InvalidOperationException($"A ação “{names[0]}” não está disponível na página atual.");
     }
 

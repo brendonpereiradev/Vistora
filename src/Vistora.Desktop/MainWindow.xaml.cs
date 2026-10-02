@@ -14,6 +14,7 @@ public partial class MainWindow : Window
 {
     private readonly LocalStore store;
     private readonly ExecutionEngine engine;
+    private readonly DiagnosticService diagnostics;
     private readonly bool preview;
     private readonly bool pendingPreview;
     private ProfileDocument profiles = new();
@@ -26,13 +27,16 @@ public partial class MainWindow : Window
     private bool closing;
     private VisitProfile? ActiveProfile => ProfilePicker.SelectedItem as VisitProfile;
 
-    public MainWindow(bool preview = false, bool pendingPreview = false)
+    public MainWindow(bool preview = false, bool pendingPreview = false, DiagnosticService? diagnostics = null)
     {
         this.preview = preview;
         this.pendingPreview = pendingPreview;
         InitializeComponent();
-        store = new LocalStore(preview ? Path.Combine(Path.GetTempPath(), "VistoraPreview", Guid.NewGuid().ToString("N")) : null);
-        engine = new ExecutionEngine(store, () => new EdgeJiraAutomation(store));
+        this.diagnostics = diagnostics ?? new DiagnosticService(preview ? Path.Combine(Path.GetTempPath(), "VistoraPreview", Guid.NewGuid().ToString("N")) : null);
+        store = new LocalStore(this.diagnostics.Root, this.diagnostics);
+        engine = new ExecutionEngine(store, () => new EdgeJiraAutomation(store), this.diagnostics);
+        this.diagnostics.WarningRaised += ShowDiagnosticWarning;
+        if (this.diagnostics.Warning is { } warning) ShowDiagnosticWarning(warning);
         engine.Progress += run => Dispatcher.Invoke(() => ShowProgress(run));
         Loaded += async (_, _) => await InitializeAsync();
     }
@@ -59,6 +63,9 @@ public partial class MainWindow : Window
             else
             {
                 profiles = await store.LoadProfilesAsync(); settings = await store.LoadSettingsAsync(); runs = await store.LoadRunsAsync();
+                settings.Diagnostics ??= new DiagnosticOptions();
+                diagnostics.Configure(settings.Diagnostics);
+                diagnostics.Register(profiles);
                 if (profiles.Profiles.Count == 0)
                 {
                     var first = NewTemplate(); profiles.Profiles.Add(first); profiles.ActiveProfileId = first.Id;
@@ -68,18 +75,24 @@ public partial class MainWindow : Window
             RefreshProfiles(); RefreshHistory();
             JiraUrlBox.Text = settings.JiraUrl; PortalUrlBox.Text = settings.PortalUrl;
             QueueUrlBox.Text = settings.QueueUrl; TimeoutBox.Text = settings.TimeoutSeconds.ToString();
+            DetailedLogsBox.IsChecked = settings.Diagnostics.MinimumLevel == DiagnosticLevel.Debug;
             ClosingTeamSummary.Text = $"Equipe de fechamento: {settings.ClosingTeam}";
             ExecutionMessage.Text = preview ? "Escolha os pavimentos e confira os textos antes de executar." : "Configure o perfil da unidade e faça login no Edge quando solicitado.";
             loading = false;
+            await diagnostics.CleanAsync();
         }
         catch (Exception ex)
         {
+            diagnostics.AppEvent("app.initialize_failed", "Não foi possível carregar os dados locais.", DiagnosticLevel.Error, ex, code: "INITIALIZATION_FAILED");
             ExecuteButton.IsEnabled = false;
             ConnectButton.IsEnabled = false;
             ExecutionMessage.Text = "Não foi possível carregar os dados locais. Os arquivos foram preservados.";
             MessageBox.Show(this, ex.Message, "Vistora", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private void ShowDiagnosticWarning(string message) => Dispatcher.InvokeAsync(() =>
+    { DiagnosticWarning.Text = message; DiagnosticWarning.Visibility = Visibility.Visible; });
 
     private static VisitProfile NewTemplate()
     {
@@ -140,6 +153,10 @@ public partial class MainWindow : Window
     private void Navigate(object sender, RoutedEventArgs e)
     {
         var index = int.Parse((string)((Button)sender).Tag);
+        SelectPage(index);
+    }
+    internal void SelectPage(int index)
+    {
         Pages.SelectedIndex = index;
         var titles = new[] { "Executar visita preventiva", "Perfis e pavimentos", "Histórico de visitas", "Configurações" };
         var subtitles = new[] { "Escolha a unidade e os pavimentos que você visitou.", "Organize os dados de cada solicitante e unidade.", "Confira os chamados e retome uma execução interrompida.", "Defina onde a automação deve abrir os chamados." };
@@ -245,9 +262,11 @@ public partial class MainWindow : Window
     }
     private async Task CheckAccessAsync(CancellationToken token)
     {
+        diagnostics.AppEvent("access.started", "Verificação de acesso iniciada.");
         await using var browser = new EdgeJiraAutomation(store);
         await browser.ConnectAsync(settings, message => Dispatcher.Invoke(() => ExecutionMessage.Text = message), token);
         ExecutionMessage.Text = "Acesso ao formulário confirmado. A sessão do Edge foi salva.";
+        diagnostics.AppEvent("access.confirmed", "Acesso ao formulário confirmado.");
     }
     private void RefreshHistory(string? selectedId = null)
     {
@@ -257,11 +276,19 @@ public partial class MainWindow : Window
             ?? runs.FirstOrDefault(r => r.Profile.Id == ActiveProfile?.Id && r.State != RunState.Completed && r.Floors.Any(f => f.IssueKey is not null))
             ?? runs.FirstOrDefault();
     }
-    private void HistorySelected(object sender, SelectionChangedEventArgs e)
+    private async void HistorySelected(object sender, SelectionChangedEventArgs e)
     {
         var run = HistoryGrid.SelectedItem as VisitRun;
         RunFloorGrid.ItemsSource = run?.Floors; RunFloorGrid.SelectedIndex = run is null ? -1 : 0;
         HistoryMessage.Text = run?.Message ?? "Selecione uma execução para ver os chamados.";
+        DiagnosticSummary.Text = "";
+        if (run is not null)
+            try
+            {
+                var overview = await diagnostics.ReadOverviewAsync(run.Id);
+                if (HistoryGrid.SelectedItem == run) DiagnosticSummary.Text = overview ?? "Diagnóstico detalhado indisponível para esta visita.";
+            }
+            catch { DiagnosticSummary.Text = "Diagnóstico indisponível."; }
     }
     private async void Resume(object sender, RoutedEventArgs e)
     {
@@ -308,6 +335,9 @@ public partial class MainWindow : Window
         var path = store.DiagnosticsDirectory(run.Id);
         if (Directory.Exists(path)) OpenPath(path); else MessageBox.Show(this, "Esta execução não tem diagnóstico registrado.", "Vistora");
     }
+    private async void ExportLog(object sender, RoutedEventArgs e)
+    { if (HistoryGrid.SelectedItem is VisitRun run) await DiagnosticExportUi.ExportAsync(this, diagnostics, run); }
+    private async void ExportAppLog(object sender, RoutedEventArgs e) => await DiagnosticExportUi.ExportAsync(this, diagnostics);
     private async void SaveSettings(object sender, RoutedEventArgs e)
     {
         if (busy) return;
@@ -317,10 +347,12 @@ public partial class MainWindow : Window
             copy.JiraUrl = JiraUrlBox.Text.Trim().TrimEnd('/'); copy.PortalUrl = PortalUrlBox.Text.Trim(); copy.QueueUrl = QueueUrlBox.Text.Trim();
             if (!int.TryParse(TimeoutBox.Text, out var timeout)) throw new InvalidOperationException("Informe o tempo de espera em segundos.");
             copy.TimeoutSeconds = timeout;
+            copy.Diagnostics.MinimumLevel = DetailedLogsBox.IsChecked == true ? DiagnosticLevel.Debug : DiagnosticLevel.Information;
             var validationProfile = new VisitProfile { Floors = [new Floor { Resolution = "Teste" }] };
             var errors = ProfileValidation.Validate(validationProfile, copy).Where(message => message.Contains("HTTPS", StringComparison.OrdinalIgnoreCase) || message.Contains("https://", StringComparison.OrdinalIgnoreCase) || message.Contains("tempo de espera", StringComparison.OrdinalIgnoreCase)).ToList();
             if (errors.Count > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
             await store.SaveSettingsAsync(copy); settings = copy;
+            diagnostics.Configure(copy.Diagnostics);
             MessageBox.Show(this, "Configurações salvas.", "Vistora");
         });
     }
@@ -330,14 +362,20 @@ public partial class MainWindow : Window
     {
         try { await operation(); }
         catch (OperationCanceledException) { ExecutionMessage.Text = "Operação interrompida."; }
-        catch (Exception exception) { MessageBox.Show(this, exception.Message, "Vistora", MessageBoxButton.OK, MessageBoxImage.Information); }
+        catch (Exception exception)
+        {
+            diagnostics.AppEvent("ui.operation_failed", "Uma operação da interface falhou.", DiagnosticLevel.Error, exception);
+            MessageBox.Show(this, exception.Message, "Vistora", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
     }
     private async void WindowClosing(object? sender, CancelEventArgs e)
     {
         if (!busy || closing) return;
         e.Cancel = true; closing = true;
         cancellation?.Cancel(); ExecutionMessage.Text = "Registrando o progresso antes de fechar…";
-        try { if (activeTask is not null) await activeTask; } catch { /* Os detalhes ficam no registro da execução. */ }
+        try { if (activeTask is not null) await activeTask; }
+        catch (Exception ex) { diagnostics.AppEvent("app.shutdown_failed", "Falha ao aguardar a execução no encerramento.", DiagnosticLevel.Error, ex); }
+        await diagnostics.FlushAsync();
         Close();
     }
 }

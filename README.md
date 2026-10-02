@@ -8,7 +8,7 @@ Cada perfil reúne os dados de um solicitante, uma unidade, seus pavimentos e os
 
 Este repositório contém o código fonte, testes, scripts de compilação e modelos genéricos necessários ao aplicativo. Configurações reais, históricos, sessões do navegador, anexos, capturas e arquivos compilados ficam fora do versionamento.
 
-Versão inicial: **0.1.5**.
+Versão atual: **0.2.0**.
 
 ## Compilar e testar
 
@@ -41,6 +41,25 @@ Os dados são salvos em `%LOCALAPPDATA%\Vistora`. O login ocorre na janela do Ed
 **Executar** continua a visita pendente do perfil. **Retomar** preserva os chamados já registrados e confere seu estado antes de executar as próximas ações. Uma abertura enviada sem identificação do número exige conferência e vinculação pelo histórico, evitando novas aberturas automáticas.
 
 O fluxo e os seletores precisam corresponder à interface e às permissões do Jira configurado. `SelectorOverrides` permite ajustar a identificação dos controles nos dados locais.
+
+## Logs e exportação para análise
+
+Cada execução e retomada registra uma linha do tempo com etapas, resultados conferidos, tempos e causas técnicas das falhas. O histórico mostra um resumo; **Abrir diagnóstico** abre os arquivos locais, inclusive para visitas bem-sucedidas.
+
+Para analisar o comportamento em diferentes computadores:
+
+1. Execute o Vistora no computador de teste.
+2. No **Histórico**, selecione a visita e clique em **Exportar log**.
+3. Informe, se desejar, um rótulo como “Teste A”, escolha se quer incluir capturas e salve o ZIP fora da pasta de dados do Vistora.
+4. Anexe o ZIP na conversa para análise. Repita em outra máquina para comparar os resultados.
+
+O pacote contém `resumo.txt`, `resumo.json`, os eventos de todas as tentativas disponíveis, informações do ambiente de origem e `manifest.json` com versões e checksums dos arquivos. Credenciais, sessão do navegador, perfis completos, configurações completas e anexos ficam fora do pacote. Números dos chamados e identificadores técnicos são conservados. Capturas ficam desmarcadas por padrão e podem conter dados visíveis do chamado.
+
+Se houver um problema antes de começar a visita, use **Configurações → Exportar log do aplicativo** e escolha a abertura do aplicativo que deseja analisar. Uma falha de inicialização também abre uma janela com essa opção. Para investigar controles do Jira, marque **Registrar detalhes para investigação**, salve as configurações e reproduza o problema. Essa preferência vale para a próxima tentativa, inclusive uma retomada.
+
+Os logs ficam em `%LOCALAPPDATA%\Vistora\logs`; diagnósticos de visitas ficam em `diagnostics\<id>\attempts\<tentativa>`. Datas dos arquivos estão em UTC. Uma exportação durante a execução registra apenas o progresso observado e identifica o resultado como parcial. Dados antigos sem logs continuam permitindo retomada, mas não recebem métricas retroativas.
+
+Por padrão, os arquivos giram a cada 10 MB, a retenção é de 30 dias e o orçamento de logs/capturas é de 200 MB. Diagnósticos de visitas pendentes e a sessão atual são preservados; os arquivos de progresso nunca são removidos pela limpeza. Um aviso informa quando o diagnóstico fica incompleto ou o orçamento é atingido. Os limites podem ser ajustados no grupo `Diagnostics` de `settings.json` com o aplicativo fechado; `MinimumLevel` aceita `Information` ou `Debug` para os modos disponíveis na interface.
 
 ## Estrutura
 

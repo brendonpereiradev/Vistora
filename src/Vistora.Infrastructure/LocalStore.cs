@@ -7,9 +7,11 @@ namespace Vistora.Infrastructure;
 public sealed class LocalStore : IRunStore
 {
     public string Root { get; }
+    public DiagnosticService? Diagnostics { get; }
     private readonly SemaphoreSlim gate = new(1, 1);
-    public LocalStore(string? root = null)
+    public LocalStore(string? root = null, DiagnosticService? diagnostics = null)
     {
+        Diagnostics = diagnostics;
         Root = root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vistora");
         Directory.CreateDirectory(Root);
         Directory.CreateDirectory(Path.Combine(Root, "runs"));
@@ -20,20 +22,30 @@ public sealed class LocalStore : IRunStore
 
     public Task<ProfileDocument> LoadProfilesAsync() => ReadAsync("profiles.json", () => new ProfileDocument());
     public Task<AppSettings> LoadSettingsAsync() => ReadAsync("settings.json", () => new AppSettings());
-    public Task SaveProfilesAsync(ProfileDocument value) => WriteAsync("profiles.json", value);
+    public Task SaveProfilesAsync(ProfileDocument value) { Diagnostics?.Register(value); return WriteAsync("profiles.json", value); }
     public Task SaveSettingsAsync(AppSettings value) => WriteAsync("settings.json", value);
-    public Task SaveRunAsync(VisitRun run) => WriteAsync(Path.Combine("runs", SafeId(run.Id) + ".json"), run);
+    public Task SaveRunAsync(VisitRun run) { Diagnostics?.Register(run); return WriteAsync(Path.Combine("runs", SafeId(run.Id) + ".json"), run); }
 
     private async Task<T> ReadAsync<T>(string relative, Func<T> create)
     {
         var path = Path.Combine(Root, relative);
         if (!File.Exists(path)) return create();
-        try { return await ReadFileAsync<T>(path); }
-        catch (JsonException ex)
+        try
         {
-            if (!File.Exists(path + ".bak")) throw new InvalidDataException($"O arquivo {relative} não pôde ser lido. Os dados foram preservados.", ex);
-            return await ReadFileAsync<T>(path + ".bak");
+            T value;
+            try { value = await ReadFileAsync<T>(path); }
+            catch (JsonException ex)
+            {
+                if (!File.Exists(path + ".bak")) throw new InvalidDataException($"O arquivo {relative} não pôde ser lido. Os dados foram preservados.", ex);
+                value = await ReadFileAsync<T>(path + ".bak");
+                Diagnostics?.AppEvent("store.backup_recovered", "Dados recuperados da cópia anterior.", DiagnosticLevel.Warning);
+            }
+            if (value is ProfileDocument profiles) Diagnostics?.Register(profiles);
+            if (value is VisitRun run) Diagnostics?.Register(run);
+            return value;
         }
+        catch (Exception ex)
+        { Diagnostics?.AppEvent("store.read_failed", "Não foi possível ler os dados locais.", DiagnosticLevel.Error, ex, code: "STORE_READ_FAILED"); throw; }
     }
 
     private static async Task<T> ReadFileAsync<T>(string path)
@@ -62,10 +74,16 @@ public sealed class LocalStore : IRunStore
             if (File.Exists(path)) File.Replace(temp, path, path + ".bak");
             else File.Move(temp, path);
         }
+        catch (Exception ex)
+        {
+            Diagnostics?.AppEvent("store.write_failed", "Não foi possível salvar os dados locais.", DiagnosticLevel.Error, ex,
+                value is VisitRun run ? run.Id : null, "STORE_WRITE_FAILED");
+            throw;
+        }
         finally
         {
-            if (File.Exists(temp)) File.Delete(temp);
-            gate.Release();
+            try { if (File.Exists(temp)) File.Delete(temp); }
+            finally { gate.Release(); }
         }
     }
 
@@ -79,6 +97,7 @@ public sealed class LocalStore : IRunStore
             {
                 run.State = RunState.Interrupted;
                 run.Message = "A execução anterior foi interrompida. Confira e retome.";
+                Diagnostics?.AppEvent("run.recovered_after_shutdown", "Execução sem conclusão observada recuperada para conferência.", DiagnosticLevel.Warning, runId: run.Id);
             }
             result.Add(run);
         }

@@ -19,6 +19,9 @@ playwright/.auth/
 **/settings.json*
 **/browser/
 **/diagnostics/
+**/logs/
+**/diagnostic-installation.json
+*.jsonl
 **/runs/
 **/attachments/
 **/storage-state*.json

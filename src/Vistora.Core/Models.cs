@@ -59,6 +59,7 @@ public sealed class AppSettings
     public int LoginTimeoutMinutes { get; set; } = 15;
     public Dictionary<string, string> SelectorOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string ClosingTeam { get; set; } = "Field Services";
+    public DiagnosticOptions Diagnostics { get; set; } = new();
 }
 
 public enum FloorStage { Pending, Created, Assigned, Started, Closed }

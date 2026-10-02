@@ -22,7 +22,7 @@ var tests = new (string Name, Func<Task> Test)[]
     ("Visitas de outros perfis e seleções ambíguas não são misturadas", SelectionGuards),
     ("Abertura incerta em qualquer pavimento impede outras criações", UncertainPreflight),
     ("Retomada de etapas diferentes pula todas as ações já concluídas", ResumeStages)
-};
+}.Concat(DiagnosticTests.Cases).ToArray();
 var failed = 0;
 foreach (var (name, test) in tests)
 {
@@ -234,7 +234,7 @@ sealed class FakeJira : IJiraAutomation
     public Dictionary<string, FakeIssue> Issues { get; } = [];
     public List<string> Actions { get; } = [];
     public int Creates, Closes, Connections;
-    public bool FailAfterCreate, FailAfterClose, WrongResolution, FailPrepareClose;
+    public bool FailAfterCreate, FailAfterClose, WrongResolution, FailPrepareClose, FailCapture, FailDispose;
     public Action? AfterCreate;
     public TaskCompletionSource? ConnectGate;
     private string? current;
@@ -269,6 +269,6 @@ sealed class FakeJira : IJiraAutomation
         return Task.CompletedTask;
     }
     private void CheckPage(FloorRun floor) { if (current != floor.IssueKey) throw new Exception("A página de outro pavimento seria alterada."); }
-    public Task CaptureFailureAsync(VisitRun run) => Task.CompletedTask;
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public Task CaptureFailureAsync(VisitRun run) => FailCapture ? Task.FromException(new IOException("Falha ao capturar.")) : Task.CompletedTask;
+    public ValueTask DisposeAsync() => FailDispose ? ValueTask.FromException(new IOException("Falha ao fechar.")) : ValueTask.CompletedTask;
 }

@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using System.Diagnostics;
+using System.Reflection;
 using Microsoft.Playwright;
 using Vistora.Core;
 using Vistora.Infrastructure;
@@ -13,6 +15,8 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
     private DomControls? controls;
     private ILocator? closingDialog;
     private AppSettings settings = new();
+    private DiagnosticAttempt? diagnostics;
+    public void SetDiagnostics(DiagnosticAttempt value) => diagnostics = value;
     private IPage Page => page ?? throw new InvalidOperationException("O navegador não está conectado.");
     private DomControls Ui => controls ?? throw new InvalidOperationException("O navegador não está conectado.");
     private static readonly Regex IssueKeyPattern = new(@"\b([A-Z][A-Z0-9]*-\d+)\b");
@@ -33,25 +37,57 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
         page = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
         page.SetDefaultTimeout(settings.TimeoutSeconds * 1000);
         page.SetDefaultNavigationTimeout(settings.TimeoutSeconds * 1000);
-        controls = new DomControls(page, settings.SelectorOverrides);
+        controls = new DomControls(page, settings.SelectorOverrides, diagnostics);
+        if (diagnostics is not null && store.Diagnostics is not null)
+            store.Diagnostics.UpdateBrowserVersion(diagnostics.Id, context.Browser?.Version,
+                typeof(Playwright).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? typeof(Playwright).Assembly.GetName().Version?.ToString());
+        page.RequestFailed += (_, request) => diagnostics?.Event("navigation.failed", "Uma requisição do navegador falhou.",
+            DiagnosticLevel.Warning, new() { ["pageKind"] = PageKind(request.Url), ["resourceType"] = request.ResourceType });
+        page.Response += (_, response) =>
+        {
+            if (response.Status >= 400) diagnostics?.Event("navigation.http_error", "Resposta HTTP de erro recebida.", DiagnosticLevel.Warning,
+                new() { ["status"] = response.Status, ["pageKind"] = PageKind(response.Url) });
+        };
         var initialUrl = initialIssueKey is null ? settings.PortalUrl : IssueUrl(initialIssueKey);
-        await Page.GotoAsync(initialUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await NavigateAsync(initialUrl);
         var deadline = DateTimeOffset.UtcNow.AddMinutes(settings.LoginTimeoutMinutes);
         DateTimeOffset? formLoadingSince = null;
         string? previousMessage = null;
+        string? waitingKind = null;
+        var waitingSince = Stopwatch.GetTimestamp();
+        diagnostics?.RecordDuration("browser.login_wait", 0);
+        diagnostics?.RecordDuration("browser.form_loading", 0);
+        void WaitChanged(string? kind)
+        {
+            if (kind == waitingKind) return;
+            if (waitingKind is not null)
+            {
+                var duration = Stopwatch.GetElapsedTime(waitingSince).TotalMilliseconds;
+                diagnostics?.RecordDuration(waitingKind == "login" ? "browser.login_wait" : "browser.form_loading", duration);
+                diagnostics?.Event("browser.wait_finished", "Espera concluída.", details: new() { ["waitKind"] = waitingKind }, durationMs: duration);
+            }
+            waitingKind = kind; waitingSince = Stopwatch.GetTimestamp();
+            if (kind is not null) diagnostics?.Event("browser.wait_started", "Aguardando o navegador.", details: new() { ["waitKind"] = kind });
+        }
+        try
+        {
         while (!(initialIssueKey is null ? await PortalReadyAsync() : await IssueReadyAsync(initialUrl)))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var onForm = IsTargetUrl(Page.Url, initialUrl);
+            WaitChanged(onForm ? "form_loading" : "login");
             string message;
             if (onForm)
             {
                 formLoadingSince ??= DateTimeOffset.UtcNow;
                 message = initialIssueKey is null ? "Carregando o formulário de visita preventiva…" : $"Carregando o chamado {initialIssueKey} para retomar…";
                 if (DateTimeOffset.UtcNow - formLoadingSince > TimeSpan.FromSeconds(settings.TimeoutSeconds))
-                    throw new InvalidOperationException(initialIssueKey is null
+                {
+                    var timeoutError = new InvalidOperationException(initialIssueKey is null
                         ? "O formulário de visita preventiva abriu, mas seus campos ainda não foram reconhecidos. Confira a página e o diagnóstico da execução."
                         : $"O chamado {initialIssueKey} abriu, mas seu status ainda não carregou. Retome pelo histórico quando estiver pronto.");
+                    timeoutError.Data["DiagnosticCode"] = "FORM_LOAD_TIMEOUT"; throw timeoutError;
+                }
             }
             else
             {
@@ -59,10 +95,32 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
                 message = "Faça login no Jira na janela do Edge. A execução continuará após o login.";
             }
             if (message != previousMessage) { report(message); previousMessage = message; }
-            if (DateTimeOffset.UtcNow > deadline) throw new InvalidOperationException("O tempo para login terminou. Retome a execução quando estiver pronto.");
+            if (DateTimeOffset.UtcNow > deadline)
+            { var timeoutError = new InvalidOperationException("O tempo para login terminou. Retome a execução quando estiver pronto."); timeoutError.Data["DiagnosticCode"] = "LOGIN_TIMEOUT"; throw timeoutError; }
             await Task.Delay(600, cancellationToken);
         }
+        }
+        finally { WaitChanged(null); }
+        diagnostics?.Event("browser.ready", "Página pronta para execução.");
         report(initialIssueKey is null ? "Login confirmado. Preparando os chamados." : $"Login confirmado. Retomando os chamados já registrados a partir de {initialIssueKey}.");
+    }
+
+    private static string PageKind(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return "unknown";
+        if (Regex.IsMatch(uri.AbsolutePath, "login|signin|auth", RegexOptions.IgnoreCase)) return "authentication";
+        if (uri.AbsolutePath.Contains("/create/", StringComparison.Ordinal)) return "create_form";
+        if (uri.AbsolutePath.Contains("/portal/", StringComparison.Ordinal)) return "customer_portal";
+        if (uri.AbsolutePath.Contains("/issue/", StringComparison.Ordinal) || uri.AbsolutePath.Contains("/browse/", StringComparison.Ordinal)) return "issue";
+        return "other";
+    }
+    private async Task NavigateAsync(string url)
+    {
+        var begin = Stopwatch.GetTimestamp();
+        diagnostics?.Event("navigation.started", "Navegação iniciada.", DiagnosticLevel.Debug, new() { ["pageKind"] = PageKind(url) });
+        await Page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        diagnostics?.Event("navigation.finished", "Documento carregado.", DiagnosticLevel.Debug,
+            new() { ["pageKind"] = PageKind(url) }, durationMs: Stopwatch.GetElapsedTime(begin).TotalMilliseconds);
     }
 
     private async Task<bool> IssueReadyAsync(string initialUrl)
@@ -95,7 +153,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
     public async Task PrepareCreateAsync(VisitRun run, FloorRun floor, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (Page.Url != settings.PortalUrl) await Page.GotoAsync(settings.PortalUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        if (Page.Url != settings.PortalUrl) await NavigateAsync(settings.PortalUrl);
         var profile = run.Profile;
         await Ui.ChooseAsync("portal.reporter", ["Abrir esta requisição em nome de"], profile.ReporterEmail,
             new Regex($"(?:^|[\\s(<]){Regex.Escape(profile.ReporterEmail)}(?=$|[\\s)>])", RegexOptions.IgnoreCase), profile.ReporterEmail);
@@ -112,6 +170,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
         await Ui.FillAsync("portal.description", ["Detalhes / justificativas", "Detalhes / justificativas:"], profile.Description);
         if (profile.Attachments.Count > 0)
         {
+            diagnostics?.Event("attachments.prepared", "Anexos preparados.", details: new() { ["count"] = profile.Attachments.Count });
             var upload = settings.SelectorOverrides.TryGetValue("portal.attachments", out var selector)
                 ? Page.Locator(selector) : Page.Locator("input[type=file]");
             if (await upload.CountAsync() != 1) throw new InvalidOperationException("Não foi possível identificar onde incluir os anexos.");
@@ -157,7 +216,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
     {
         cancellationToken.ThrowIfCancellationRequested();
         var key = floor.IssueKey ?? throw new InvalidOperationException("Chamado ainda não identificado.");
-        await Page.GotoAsync(IssueUrl(key), new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await NavigateAsync(IssueUrl(key));
         var title = settings.SelectorOverrides.TryGetValue("issue.title", out var titleSelector)
             ? Page.Locator(titleSelector) : Page.GetByRole(AriaRole.Heading, new() { Name = run.Profile.Title, Exact = true });
         await title.First.WaitForAsync(new() { State = WaitForSelectorState.Visible });
@@ -175,7 +234,10 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
         })
         {
             var actual = await Ui.ValueAsync(field, labels);
-            if (!string.Equals(DomControls.Normalize(actual), DomControls.Normalize(expected), StringComparison.OrdinalIgnoreCase))
+            var matches = string.Equals(DomControls.Normalize(actual), DomControls.Normalize(expected), StringComparison.OrdinalIgnoreCase);
+            diagnostics?.Event("field.verified", "Campo conferido.", matches ? DiagnosticLevel.Debug : DiagnosticLevel.Warning,
+                new() { ["controlKey"] = field, ["matches"] = matches });
+            if (!matches)
                 throw new InvalidOperationException($"{key}: o campo “{labels[0]}” não corresponde a {floor.Name}. Confira os dados antes de retomar.");
         }
         var reporter = await Ui.ValueAsync("issue.reporter", ["Reporter", "Relator", "Solicitante"]);
@@ -208,7 +270,12 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
             cancellationToken.ThrowIfCancellationRequested();
             var button = await StatusButtonLocatorAsync();
             var count = await button.CountAsync();
-            if (count > 1) throw new InvalidOperationException("O Jira exibiu mais de um controle de status do chamado. Confira a página antes de retomar.");
+            if (count > 1)
+            {
+                diagnostics?.Event("control.ambiguous", "Mais de um controle de status foi encontrado.", DiagnosticLevel.Warning,
+                    new() { ["controlKey"] = "issue.status", ["count"] = count }, errorCode: "FIELD_AMBIGUOUS");
+                throw new InvalidOperationException("O Jira exibiu mais de um controle de status do chamado. Confira a página antes de retomar.");
+            }
             if (count == 1 && await button.IsEnabledAsync()) return button;
             await Task.Delay(200, cancellationToken);
         } while (DateTimeOffset.UtcNow < deadline);
@@ -313,7 +380,8 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
     private async Task<bool> ResolutionMatchesAsync(string expected)
     {
         var directValue = await Ui.TryValueAsync("issue.resolution", ["Resolução do chamado"]);
-        if (directValue is not null) return DomControls.Normalize(directValue) == DomControls.Normalize(expected);
+        if (directValue is not null)
+        { diagnostics?.Event("verification.source", "Origem da conferência da resolução.", DiagnosticLevel.Debug, new() { ["source"] = "issue_field" }); return DomControls.Normalize(directValue) == DomControls.Normalize(expected); }
         // Esse campo aparece no modal, mas não está no layout principal do Jira da unidade.
         // O histórico registra separadamente os valores anteriores e os novos valores salvos.
         foreach (var name in new[] { "History", "Histórico" })
@@ -321,6 +389,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
             var tab = Page.GetByRole(AriaRole.Tab, new() { Name = name, Exact = true }).Filter(new() { Visible = true });
             if (!await DomControls.IsUniqueVisibleAsync(tab)) continue;
             await tab.ClickAsync();
+            diagnostics?.Event("verification.source", "Origem da conferência da resolução.", DiagnosticLevel.Debug, new() { ["source"] = "issue_history" });
             var updates = Page.Locator("[data-testid='issue-history.ui.history-items.generic-history-item.history-item']")
                 .Filter(new() { Has = Page.GetByText(DomControls.LabelPattern("Resolução do chamado")), Visible = true });
             try { await updates.First.WaitForAsync(new() { State = WaitForSelectorState.Visible }); }
@@ -341,6 +410,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
         }
         if (settings.SelectorOverrides.TryGetValue("issue.publicComment", out var selector))
         {
+            diagnostics?.Event("verification.source", "Origem da conferência do comentário público.", DiagnosticLevel.Debug, new() { ["source"] = "public_comment_override" });
             var comments = Page.Locator(selector);
             for (var i = 0; i < await comments.CountAsync(); i++)
                 if (DomControls.Normalize(await comments.Nth(i).InnerTextAsync()) == DomControls.Normalize(expected)) return true;
@@ -378,7 +448,8 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
             throw new InvalidOperationException("O link do portal não corresponde ao chamado em conferência.");
         try
         {
-            await Page.GotoAsync(target.AbsoluteUri, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+            diagnostics?.Event("verification.source", "Origem da conferência do comentário público.", DiagnosticLevel.Debug, new() { ["source"] = "customer_portal" });
+            await NavigateAsync(target.AbsoluteUri);
             await Page.GetByText(key, new() { Exact = true }).First.WaitForAsync(new() { State = WaitForSelectorState.Visible });
             // No portal do cliente, ler apenas comentários publicados; descrições e editores ficam excluídos.
             var bodies = Page.Locator(".ak-renderer-wrapper.is-comment .ak-renderer-document").Filter(new() { Visible = true });
@@ -392,17 +463,27 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
             } while (DateTimeOffset.UtcNow < deadline);
             return false;
         }
-        finally { if (!Page.IsClosed) await Page.GotoAsync(originalUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded }); }
+        finally { if (!Page.IsClosed) await NavigateAsync(originalUrl); }
     }
 
     public async Task CaptureFailureAsync(VisitRun run)
     {
-        if (page is null || page.IsClosed || !Uri.TryCreate(page.Url, UriKind.Absolute, out var uri) ||
-            uri.Authority != new Uri(settings.JiraUrl).Authority || Regex.IsMatch(uri.AbsolutePath, "login|signin|auth", RegexOptions.IgnoreCase)) return;
-        var directory = store.DiagnosticsDirectory(run.Id);
+        if (page is null || page.IsClosed)
+        { diagnostics?.Event("artifact.skipped", "Captura indisponível: navegador fechado ou não conectado.", DiagnosticLevel.Warning); return; }
+        if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var uri) || uri.Authority != new Uri(settings.JiraUrl).Authority ||
+            PageKind(page.Url) == "authentication" || await page.Locator("input[type=password]").CountAsync() > 0)
+        { diagnostics?.Event("artifact.skipped", "Captura não permitida nesta página.", DiagnosticLevel.Warning); return; }
+        var attemptId = diagnostics?.Id ?? Guid.NewGuid().ToString("N");
+        var directory = store.Diagnostics?.ArtifactDirectory(run.Id, attemptId) ?? Path.Combine(store.DiagnosticsDirectory(run.Id), "attempts", attemptId, "artifacts");
         Directory.CreateDirectory(directory);
-        await page.ScreenshotAsync(new() { Path = Path.Combine(directory, "falha.png"), FullPage = true });
-        await File.WriteAllTextAsync(Path.Combine(directory, "contexto.txt"), $"Data: {DateTimeOffset.Now:O}\nPágina: {uri.GetLeftPart(UriPartial.Path)}\nEtapa: {run.Message}");
+        var filename = $"{Guid.NewGuid():N}-falha.png";
+        var profile = run.Profile;
+        string[] privateValues = [profile.ReporterName, profile.ReporterEmail, profile.FullName, profile.Extension, profile.Phone,
+            profile.Unit, profile.Description, run.TechnicianName, .. run.Floors.Select(f => f.Floor.Resolution)];
+        var masks = new List<ILocator> { page.Locator("input,textarea,[contenteditable=true]") };
+        masks.AddRange(privateValues.Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().Select(v => page.GetByText(v, new() { Exact = false })));
+        await page.ScreenshotAsync(new() { Path = Path.Combine(directory, filename), FullPage = true, Mask = masks, Timeout = 10000 });
+        diagnostics?.Event("artifact.saved", "Captura de falha disponível.", artifacts: ["artifacts/" + filename]);
     }
 
     public async ValueTask DisposeAsync()

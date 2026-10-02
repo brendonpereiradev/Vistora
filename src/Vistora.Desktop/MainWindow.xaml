@@ -14,7 +14,7 @@
         <StackPanel DockPanel.Dock="Bottom" VerticalAlignment="Bottom">
           <TextBlock Text="Microsoft Edge" Foreground="White" FontWeight="SemiBold"/>
           <TextBlock Text="Dados salvos neste&#10;computador" Foreground="#BFDADE" Margin="0,6,0,16"/>
-          <TextBlock Text="Vistora 0.1.5" Foreground="#8CAFB8"/>
+          <TextBlock Text="Vistora 0.2.0" Foreground="#8CAFB8"/>
         </StackPanel>
       </DockPanel>
     </Border>
@@ -51,9 +51,9 @@
         <TabItem>
           <Grid><Grid.RowDefinitions><RowDefinition Height="2*"/><RowDefinition Height="Auto"/><RowDefinition Height="2*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <DataGrid x:Name="HistoryGrid" IsReadOnly="True" SelectionChanged="HistorySelected"><DataGrid.Columns><DataGridTextColumn Header="Data" Binding="{Binding DateLabel}" Width="150"/><DataGridTextColumn Header="Perfil" Binding="{Binding ProfileName}" Width="*"/><DataGridTextColumn Header="Resultado" Binding="{Binding StateLabel}" Width="*"/><DataGridTextColumn Header="Progresso" Binding="{Binding ProgressLabel}" Width="150"/></DataGrid.Columns></DataGrid>
-            <TextBlock x:Name="HistoryMessage" Grid.Row="1" Margin="0,14" TextWrapping="Wrap" Text="Selecione uma execução para ver os chamados."/>
+            <StackPanel Grid.Row="1" Margin="0,14"><TextBlock x:Name="HistoryMessage" TextWrapping="Wrap" Text="Selecione uma execução para ver os chamados."/><TextBlock x:Name="DiagnosticSummary" TextWrapping="Wrap" Foreground="#58727D" Margin="0,6,0,0"/></StackPanel>
             <DataGrid x:Name="RunFloorGrid" Grid.Row="2" IsReadOnly="True"><DataGrid.Columns><DataGridTextColumn Header="Pavimento" Binding="{Binding Name}" Width="*"/><DataGridTextColumn Header="Chamado" Binding="{Binding IssueKey}" Width="130"/><DataGridTextColumn Header="Etapa" Binding="{Binding StageLabel}" Width="140"/><DataGridTextColumn Header="Mensagem" Binding="{Binding Message}" Width="2*"/></DataGrid.Columns></DataGrid>
-            <WrapPanel Grid.Row="3" Margin="0,16,0,0"><Button x:Name="ResumeButton" Content="Retomar execução" Style="{StaticResource Primary}" Click="Resume"/><Button x:Name="LinkButton" Content="Vincular chamado" Click="LinkIssue"/><Button Content="Abrir chamado no Jira" Click="OpenIssue"/><Button Content="Abrir diagnóstico" Click="OpenDiagnostics"/></WrapPanel>
+            <WrapPanel Grid.Row="3" Margin="0,16,0,0"><Button x:Name="ResumeButton" Content="Retomar execução" Style="{StaticResource Primary}" Click="Resume"/><Button x:Name="LinkButton" Content="Vincular chamado" Click="LinkIssue"/><Button Content="Abrir chamado no Jira" Click="OpenIssue"/><Button Content="Abrir diagnóstico" Click="OpenDiagnostics"/><Button Content="Exportar log" Click="ExportLog"/></WrapPanel>
           </Grid>
         </TabItem>
         <TabItem>
@@ -62,12 +62,14 @@
             <TextBlock Text="Endereço do formulário de visita preventiva" Style="{StaticResource Label}"/><TextBox x:Name="PortalUrlBox"/>
             <TextBlock Text="Endereço da fila de atendimento" Style="{StaticResource Label}"/><TextBox x:Name="QueueUrlBox"/>
             <TextBlock Text="Tempo de espera por etapa (segundos)" Style="{StaticResource Label}"/><TextBox x:Name="TimeoutBox" MaxWidth="140" HorizontalAlignment="Left"/>
+            <CheckBox x:Name="DetailedLogsBox" Content="Registrar detalhes para investigação" Margin="0,8,0,8"/>
+            <TextBlock Text="Os logs registram resultados e tempos. Ative os detalhes antes de reproduzir um problema e exporte o pacote para análise." TextWrapping="Wrap" Foreground="#58727D" Margin="0,0,0,12"/>
             <Border Background="#E8F2F3" Padding="16" Margin="0,6,0,20"><TextBlock Text="O login é feito na janela do Microsoft Edge aberta pelo Vistora. A sessão fica salva neste computador. Trocar o perfil da unidade altera o solicitante do chamado; a conta do técnico continua sendo a conta conectada no Jira." TextWrapping="Wrap"/></Border>
-            <WrapPanel><Button Content="Salvar configurações" Style="{StaticResource Primary}" Click="SaveSettings"/><Button Content="Abrir pasta de dados" Click="OpenData"/></WrapPanel>
+            <WrapPanel><Button Content="Salvar configurações" Style="{StaticResource Primary}" Click="SaveSettings"/><Button Content="Abrir pasta de dados" Click="OpenData"/><Button Content="Exportar log do aplicativo" Click="ExportAppLog"/></WrapPanel>
           </StackPanel></ScrollViewer>
         </TabItem>
       </TabControl>
-      <TextBlock x:Name="ClosingTeamSummary" Grid.Row="2" Foreground="#58727D" FontSize="12" Margin="0,18,0,0"/>
+      <StackPanel Grid.Row="2" Margin="0,18,0,0"><TextBlock x:Name="ClosingTeamSummary" Foreground="#58727D" FontSize="12"/><TextBlock x:Name="DiagnosticWarning" TextWrapping="Wrap" Foreground="#9B4D18" Margin="0,5,0,0" Visibility="Collapsed"/></StackPanel>
     </Grid>
   </Grid>
 </Window>

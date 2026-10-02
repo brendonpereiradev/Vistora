@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using System.Net.Sockets;
 using Microsoft.Playwright;
 using Vistora.Automation.Edge;
@@ -122,19 +123,23 @@ var hidePublic = false;
 var wrongLatestResolution = false;
 var loginMode = false;
 var incompleteForm = false;
+var passwordForm = false;
 var portalVisits = 0;
 app.MapGet("/{**path}", (HttpContext ctx) =>
 {
     if (ctx.Request.Path.Value!.EndsWith("/create/1", StringComparison.Ordinal)) portalVisits++;
     if (loginMode && !ctx.Request.Path.Value!.EndsWith("/user/login", StringComparison.Ordinal))
         return Results.Redirect("/servicedesk/customer/portal/1/user/login");
+    if (passwordForm) return Results.Content("<html><body><input type='password' value='senha-sentinel'></body></html>", "text/html; charset=utf-8");
     if (loginMode || incompleteForm)
         return Results.Content("<html><body><label>Abrir esta requisição em nome de*<span>(required)</span></label><p>Carregando</p></body></html>", "text/html; charset=utf-8");
     return Results.Content(Fixture.Html(hidePublic, wrongLatestResolution), "text/html; charset=utf-8");
 });
 await app.StartAsync();
 var root = Path.Combine(Path.GetTempPath(), "VistoraBrowserTests", Guid.NewGuid().ToString("N"));
-var store = new LocalStore(root);
+await using var diagnostics = new DiagnosticService(root);
+diagnostics.Configure(new DiagnosticOptions { MinimumLevel = DiagnosticLevel.Debug });
+var store = new LocalStore(root, diagnostics);
 var profile = new VisitProfile
 {
     Name = "Perfil de teste", ReporterName = "Pessóa Teste", ReporterEmail = "pessoa@example.com", FullName = "Pessoa Teste",
@@ -146,7 +151,7 @@ run.Settings.JiraUrl = $"http://127.0.0.1:{port}";
 run.Settings.PortalUrl = run.Settings.JiraUrl + "/servicedesk/customer/portal/1/group/1/create/1";
 run.Settings.QueueUrl = run.Settings.JiraUrl + "/queue";
 run.Settings.TimeoutSeconds = 10;
-var engine = new ExecutionEngine(store, () => new EdgeJiraAutomation(store));
+var engine = new ExecutionEngine(store, () => new EdgeJiraAutomation(store), diagnostics);
 engine.Progress += r => Console.WriteLine(r.Message);
 var failures = 0;
 try
@@ -169,6 +174,12 @@ try
     Check(run.State == RunState.Completed, run.Message);
     Check(run.Floors.Select(f => f.IssueKey).SequenceEqual(createdKeys), "A retomada substituiu os chamados existentes.");
     Check(portalVisits == portalVisitsBeforeResume, "A retomada abriu o formulário de criação.");
+    await diagnostics.FlushAsync();
+    var eventFiles = Directory.EnumerateFiles(store.DiagnosticsDirectory(run.Id), "events.jsonl", SearchOption.AllDirectories).ToArray();
+    var eventText = string.Concat(await Task.WhenAll(eventFiles.Select(path => File.ReadAllTextAsync(path))));
+    Check(eventFiles.Length == 2 && eventText.Contains("close.confirmed") && eventText.Contains("control.lookup"), "Linha do tempo do navegador ausente.");
+    Check(!eventText.Contains(profile.ReporterEmail) && !eventText.Contains(profile.FullName) && !eventText.Contains(profile.Floors[0].Resolution), "Dados do formulário vazaram para os logs.");
+    Console.WriteLine("PASS: navegador registra etapas e retomadas sem valores privados do formulário.");
     Console.WriteLine("PASS: retomada após criação atribui, inicia e fecha os mesmos chamados.");
     Check(run.Floors.Select(f => f.IssueKey).Distinct().Count() == 2, "Chamados não são distintos.");
     Console.WriteLine("PASS: fluxo completo com rótulos (required) ocultos e comboboxes cobertos pelo valor selecionado.");
@@ -197,9 +208,12 @@ try
     }
 
     loginMode = true;
+    var loginProbe = ProfileValidation.CreateRun(profile, new AppSettings()); loginProbe.Settings = Serialization.Copy(run.Settings);
+    var loginDiagnostics = new DiagnosticAttempt(diagnostics, loginProbe, "access");
     using (var loginCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
     await using (var loginBrowser = new EdgeJiraAutomation(store))
     {
+        loginBrowser.SetDiagnostics(loginDiagnostics);
         var loginReported = false;
         try
         {
@@ -210,19 +224,69 @@ try
             throw new Exception("Uma página de login foi reconhecida como formulário pronto.");
         }
         catch (OperationCanceledException) { Check(loginReported, "Não houve identificação da espera pelo login."); }
+        await loginBrowser.CaptureFailureAsync(loginProbe);
     }
+    await loginDiagnostics.FinishAsync(false, "Interrupted");
+    Check(!Directory.EnumerateFiles(store.DiagnosticsDirectory(loginProbe.Id), "*.png", SearchOption.AllDirectories).Any(), "Página de login foi capturada.");
+    Console.WriteLine("PASS: espera pelo login é medida e a captura de autenticação é impedida.");
     Console.WriteLine("PASS: a página de login continua aguardando autenticação.");
 
     loginMode = false; incompleteForm = true;
+    var formProbe = ProfileValidation.CreateRun(profile, new AppSettings()); formProbe.Settings = Serialization.Copy(run.Settings);
+    var formDiagnostics = new DiagnosticAttempt(diagnostics, formProbe, "access");
     await using (var formBrowser = new EdgeJiraAutomation(store))
     {
+        formBrowser.SetDiagnostics(formDiagnostics);
         var formSettings = Serialization.Copy(run.Settings); formSettings.TimeoutSeconds = 1;
         var messages = new List<string>();
-        try { await formBrowser.ConnectAsync(formSettings, messages.Add, default); throw new Exception("Formulário incompleto aceito."); }
+        try { await formDiagnostics.StepAsync("browser.connect", null, () => formBrowser.ConnectAsync(formSettings, messages.Add, default)); throw new Exception("Formulário incompleto aceito."); }
         catch (InvalidOperationException ex) when (ex.Message.Contains("campos ainda não foram reconhecidos", StringComparison.Ordinal)) { }
         Check(messages.All(m => !m.StartsWith("Faça login", StringComparison.Ordinal)), "Uma falha no formulário foi reportada como falta de login.");
+        await formBrowser.CaptureFailureAsync(formProbe); await formBrowser.CaptureFailureAsync(formProbe);
     }
+    await formDiagnostics.FinishAsync(false, "Failed");
+    Check(Directory.EnumerateFiles(store.DiagnosticsDirectory(formProbe.Id), "*.png", SearchOption.AllDirectories).Count() == 2, "Uma captura sobrescreveu a anterior.");
+    var formSummaryText = await File.ReadAllTextAsync(Path.Combine(store.DiagnosticsDirectory(formProbe.Id), "attempts", formDiagnostics.Id, "summary.json"));
+    using (var formSummary = JsonDocument.Parse(formSummaryText))
+        Check(formSummary.RootElement.GetProperty("errorCode").GetString() == "FORM_LOAD_TIMEOUT" &&
+            formSummary.RootElement.GetProperty("stepDurationsMs").GetProperty("browser.form_loading").GetDouble() > 0,
+            "Timeout ou duração do carregamento não registrados.");
+    var exportPath = Path.Combine(Path.GetTempPath(), $"Vistora-browser-export-{Guid.NewGuid():N}.zip");
+    await diagnostics.ExportAsync(exportPath, run);
+    using (var zip = System.IO.Compression.ZipFile.OpenRead(exportPath))
+    {
+        var environmentFiles = zip.Entries.Where(e => e.FullName.EndsWith("environment.json")).ToArray();
+        foreach (var entry in environmentFiles)
+        {
+            using var source = entry.Open(); using var json = await JsonDocument.ParseAsync(source);
+            Check(json.RootElement.GetProperty("edgeVersion").GetString() != "indisponível", "Versão real do Edge não registrada.");
+        }
+        Check(environmentFiles.Length == 2, "Metadados de cada retomada ausentes.");
+    }
+    Console.WriteLine("PASS: capturas preservadas e ZIP inclui versões do Edge por tentativa.");
     Console.WriteLine("PASS: formulário incompleto respeita o tempo da etapa e informa o problema correto.");
+    incompleteForm = false;
+    var ambiguousProbe = ProfileValidation.CreateRun(profile, new AppSettings()); ambiguousProbe.Settings = Serialization.Copy(run.Settings);
+    ambiguousProbe.Settings.SelectorOverrides["portal.ready"] = "body";
+    ambiguousProbe.Settings.SelectorOverrides["portal.title"] = "input";
+    await engine.ExecuteAsync(ambiguousProbe, default);
+    using (var summary = JsonDocument.Parse(await File.ReadAllTextAsync(Directory.EnumerateFiles(store.DiagnosticsDirectory(ambiguousProbe.Id), "summary.json", SearchOption.AllDirectories).Single())))
+        Check(summary.RootElement.GetProperty("errorCode").GetString() == "FIELD_AMBIGUOUS" && ambiguousProbe.Floors.All(f => f.IssueKey is null),
+            "Controle ambíguo não identificado antes do envio.");
+    Console.WriteLine("PASS: controle ambíguo registra chave, contagem e causa sem enviar o formulário.");
+    passwordForm = true;
+    var passwordProbe = ProfileValidation.CreateRun(profile, new AppSettings()); passwordProbe.Settings = Serialization.Copy(run.Settings);
+    passwordProbe.Settings.SelectorOverrides["portal.ready"] = "body";
+    var passwordDiagnostics = new DiagnosticAttempt(diagnostics, passwordProbe, "access");
+    await using (var passwordBrowser = new EdgeJiraAutomation(store))
+    {
+        passwordBrowser.SetDiagnostics(passwordDiagnostics);
+        await passwordBrowser.ConnectAsync(passwordProbe.Settings, _ => { }, default);
+        await passwordBrowser.CaptureFailureAsync(passwordProbe);
+    }
+    await passwordDiagnostics.FinishAsync(false, "Interrupted");
+    Check(!Directory.EnumerateFiles(store.DiagnosticsDirectory(passwordProbe.Id), "*.png", SearchOption.AllDirectories).Any(), "Formulário de senha fora de rota de login foi capturado.");
+    Console.WriteLine("PASS: formulário de senha impede captura mesmo fora de uma rota de autenticação.");
 }
 catch (Exception ex) { failures++; Console.WriteLine("FAIL: " + ex); Console.WriteLine("Diagnóstico: " + store.DiagnosticsDirectory(run.Id)); }
 finally { await app.StopAsync(); await app.DisposeAsync(); }
