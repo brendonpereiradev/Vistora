@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Vistora</AssemblyName>
+    <Version>0.1.5</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Vistora.Core/Vistora.Core.csproj" />
+    <ProjectReference Include="../Vistora.Infrastructure/Vistora.Infrastructure.csproj" />
+    <ProjectReference Include="../Vistora.Automation.Edge/Vistora.Automation.Edge.csproj" />
+    <Content Include="../../assets/resolucoes.txt" Link="assets/resolucoes.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

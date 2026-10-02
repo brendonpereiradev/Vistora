@@ -1,0 +1,43 @@
+.tools/
+**/bin/
+**/obj/
+output/
+.vs/
+*.user
+*.suo
+*.tmp
+*.bak
+playwright/.auth/
+
+# Material e documentação local do trabalho
+/Screenshots & Text/
+/docs/
+/PLANO_DE_IMPLEMENTACAO.md
+
+# Configurações, sessões, históricos, anexos e diagnósticos locais
+**/profiles.json*
+**/settings.json*
+**/browser/
+**/diagnostics/
+**/runs/
+**/attachments/
+**/storage-state*.json
+**/storageState*.json
+.env
+.env.*
+!.env.example
+*.log
+*.zip
+*.exe
+*.dll
+*.pdb
+*.db
+*.sqlite*
+*.pem
+*.key
+
+# Editores e arquivos do Windows
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
