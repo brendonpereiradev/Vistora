@@ -1,18 +1,63 @@
 <Window x:Class="Vistora.Desktop.ProfileWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Configurar perfil — Vistora" Width="960" Height="800" MinWidth="820" MinHeight="680" WindowStartupLocation="CenterOwner">
-  <DockPanel Margin="26">
-    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16"><TextBlock Text="Perfil da unidade" FontFamily="Bahnschrift" FontSize="28"/><TextBlock Text="Cadastre o solicitante, os pavimentos e o texto de cada visita." Foreground="#58727D" Margin="0,6,0,0"/></StackPanel>
-    <Grid DockPanel.Dock="Bottom" Margin="0,20,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Os dados ficam salvos neste computador." Foreground="#58727D" VerticalAlignment="Center"/><StackPanel Grid.Column="1" Orientation="Horizontal"><Button Content="Cancelar" Click="Cancel"/><Button Content="Salvar perfil" Style="{StaticResource Primary}" Click="Save"/></StackPanel></Grid>
+  <DockPanel Margin="30,26,30,22">
+    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,18">
+      <TextBlock Text="Perfil da unidade" FontFamily="Bahnschrift" FontSize="28"/>
+      <TextBlock Text="Cadastre o solicitante, os pavimentos e o texto de cada visita." Foreground="{StaticResource Muted}" Margin="0,6,0,0"/>
+    </StackPanel>
+    <Grid DockPanel.Dock="Bottom" Margin="0,18,0,0">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock Text="Os dados ficam salvos neste computador." Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+      <StackPanel Grid.Column="1" Orientation="Horizontal"><Button Content="Cancelar" Click="Cancel"/><Button Content="Salvar perfil" Style="{StaticResource Primary}" Margin="0" Click="Save"/></StackPanel>
+    </Grid>
     <TabControl Background="Transparent">
-      <TabItem Header="Dados do formulário"><ScrollViewer VerticalScrollBarVisibility="Auto"><Grid Margin="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-        <StackPanel><TextBlock Text="Nome do perfil" Style="{StaticResource Label}"/><TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Text="Nome do solicitante no Jira" Style="{StaticResource Label}"/><TextBox Text="{Binding ReporterName, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Text="E-mail do solicitante no Jira" Style="{StaticResource Label}"/><TextBox Text="{Binding ReporterEmail, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Text="Nome completo do usuário" Style="{StaticResource Label}"/><TextBox Text="{Binding FullName, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Text="Ramal do solicitante" Style="{StaticResource Label}"/><TextBox Text="{Binding Extension, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Text="Unidade (nome completo no Jira)" Style="{StaticResource Label}"/><TextBox Text="{Binding Unit, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-        <StackPanel Grid.Column="2"><TextBlock Text="Telefone (opcional)" Style="{StaticResource Label}"/><TextBox Text="{Binding Phone, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Text="Título" Style="{StaticResource Label}"/><TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Text="Detalhes / justificativas" Style="{StaticResource Label}"/><TextBox Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" Height="110" VerticalContentAlignment="Top"/><TextBlock Text="Anexos (opcional)" Style="{StaticResource Label}"/><TextBox x:Name="AttachmentsBox" AcceptsReturn="True" TextWrapping="Wrap" Height="100" VerticalContentAlignment="Top"/><Button Content="Escolher arquivos" Click="ChooseAttachments" HorizontalAlignment="Left"/><TextBlock Text="Os anexos serão incluídos em cada chamado." Foreground="#58727D" TextWrapping="Wrap" Margin="0,10,0,0"/></StackPanel>
-      </Grid></ScrollViewer></TabItem>
-      <TabItem Header="Pavimentos e resoluções"><Grid Margin="16"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="2*"/><RowDefinition Height="Auto"/><RowDefinition Height="3*"/></Grid.RowDefinitions>
-        <WrapPanel Margin="0,0,0,12"><Button Content="Adicionar pavimento" Click="AddFloor"/><Button Content="Remover" Click="RemoveFloor"/><Button Content="Subir" Click="MoveUp"/><Button Content="Descer" Click="MoveDown"/></WrapPanel>
-        <DataGrid x:Name="FloorsGrid" Grid.Row="1" SelectionChanged="SelectedFloorChanged"><DataGrid.Columns><DataGridCheckBoxColumn Header="Visitar" Binding="{Binding Selected, UpdateSourceTrigger=PropertyChanged}" Width="70"/><DataGridTextColumn Header="Andar / pavimento" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="*"/><DataGridTextColumn Header="Setor" Binding="{Binding Sector, UpdateSourceTrigger=PropertyChanged}" Width="*"/><DataGridTextColumn Header="Sala" Binding="{Binding Room, UpdateSourceTrigger=PropertyChanged}" Width="*"/></DataGrid.Columns></DataGrid>
-        <TextBlock Grid.Row="2" Text="Resolução do pavimento selecionado (também será o comentário público)" Margin="0,14,0,5" Style="{StaticResource Label}"/>
-        <TextBox x:Name="ResolutionBox" Grid.Row="3" AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top" Text="{Binding Resolution, UpdateSourceTrigger=PropertyChanged}" Margin="0"/>
-      </Grid></TabItem>
+      <TabItem Header="Dados do formulário">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Focusable="False">
+          <Grid Margin="0,22,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock Text="Identificação" Style="{StaticResource Section}"/>
+              <TextBlock Text="Nome do perfil" Style="{StaticResource Label}"/><TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+              <TextBlock Text="Unidade (nome completo no Jira)" Style="{StaticResource Label}"/><TextBox Text="{Binding Unit, UpdateSourceTrigger=PropertyChanged}"/>
+              <TextBlock Text="Solicitante" Style="{StaticResource Section}" Margin="0,10,0,6"/>
+              <TextBlock Text="Nome do solicitante no Jira" Style="{StaticResource Label}"/><TextBox Text="{Binding ReporterName, UpdateSourceTrigger=PropertyChanged}"/>
+              <TextBlock Text="E-mail do solicitante no Jira" Style="{StaticResource Label}"/><TextBox Text="{Binding ReporterEmail, UpdateSourceTrigger=PropertyChanged}"/>
+              <TextBlock Text="Nome completo do usuário" Style="{StaticResource Label}"/><TextBox Text="{Binding FullName, UpdateSourceTrigger=PropertyChanged}"/>
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel><TextBlock Text="Ramal do solicitante" Style="{StaticResource Label}"/><TextBox Text="{Binding Extension, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                <StackPanel Grid.Column="2"><TextBlock Text="Telefone (opcional)" Style="{StaticResource Label}"/><TextBox Text="{Binding Phone, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+              </Grid>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+              <TextBlock Text="Chamado" Style="{StaticResource Section}"/>
+              <TextBlock Text="Título" Style="{StaticResource Label}"/><TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"/>
+              <TextBlock Text="Detalhes / justificativas" Style="{StaticResource Label}"/><TextBox Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Height="120" VerticalContentAlignment="Top"/>
+              <TextBlock Text="Anexos (opcional)" Style="{StaticResource Label}"/>
+              <ListBox x:Name="AttachmentsList" Height="120" SelectionMode="Extended">
+                <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Converter={StaticResource FileName}}" ToolTip="{Binding}" TextTrimming="CharacterEllipsis"/></DataTemplate></ListBox.ItemTemplate>
+              </ListBox>
+              <StackPanel Orientation="Horizontal"><Button Content="Adicionar arquivos" Click="AddAttachments"/><Button Content="Remover" Click="RemoveAttachments"/></StackPanel>
+              <TextBlock Text="Os anexos serão incluídos em cada chamado." Style="{StaticResource Hint}" Margin="0,10,0,0"/>
+            </StackPanel>
+          </Grid>
+        </ScrollViewer>
+      </TabItem>
+      <TabItem Header="Pavimentos e resoluções">
+        <Grid Margin="0,22,0,0">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="2*"/><RowDefinition Height="Auto"/><RowDefinition Height="3*"/></Grid.RowDefinitions>
+          <WrapPanel Margin="0,0,0,12"><Button Content="Adicionar pavimento" Click="AddFloor"/><Button Content="Remover" Click="RemoveFloor"/><Button Content="Subir" Click="MoveUp"/><Button Content="Descer" Click="MoveDown"/></WrapPanel>
+          <DataGrid x:Name="FloorsGrid" Grid.Row="1" SelectionChanged="SelectedFloorChanged">
+            <DataGrid.Columns>
+              <DataGridTemplateColumn Header="Visitar" Width="80"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox IsChecked="{Binding Selected, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Left" VerticalAlignment="Center"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+              <DataGridTextColumn Header="Andar / pavimento" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+              <DataGridTextColumn Header="Setor" Binding="{Binding Sector, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+              <DataGridTextColumn Header="Sala" Binding="{Binding Room, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+            </DataGrid.Columns>
+          </DataGrid>
+          <TextBlock Grid.Row="2" Text="Resolução do pavimento selecionado (também será o comentário público)" Margin="0,18,0,5" Style="{StaticResource Label}"/>
+          <TextBox x:Name="ResolutionBox" Grid.Row="3" AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top" Text="{Binding Resolution, UpdateSourceTrigger=PropertyChanged}" Margin="0"/>
+        </Grid>
+      </TabItem>
     </TabControl>
   </DockPanel>
 </Window>

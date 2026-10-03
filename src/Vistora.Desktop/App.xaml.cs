@@ -23,7 +23,9 @@ public partial class App : Application
             MessageBox.Show(args.Exception.Message, "Vistora", MessageBoxButton.OK, MessageBoxImage.Error);
             args.Handled = true;
         };
-        var window = new MainWindow(preview, preview && e.Args.Contains("--preview-pending"));
+        var pageIndex = Array.IndexOf(e.Args, "--preview-page");
+        var page = preview && pageIndex >= 0 && e.Args.Length > pageIndex + 1 && int.TryParse(e.Args[pageIndex + 1], out var n) ? n : 0;
+        var window = new MainWindow(preview, preview && e.Args.Contains("--preview-pending"), page);
         MainWindow = window;
         window.Show();
         if (preview)
@@ -32,7 +34,8 @@ public partial class App : Application
             {
                 await Task.Delay(500);
                 window.UpdateLayout();
-                var bitmap = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                var client = (FrameworkElement)window.Content; // área útil, sem a moldura do Windows
+                var bitmap = new RenderTargetBitmap((int)client.ActualWidth, (int)client.ActualHeight, 96, 96, PixelFormats.Pbgra32);
                 bitmap.Render(window);
                 var pathIndex = Array.IndexOf(e.Args, "--preview");
                 var path = e.Args.Length > pathIndex + 1 ? e.Args[pathIndex + 1] : "vistora-preview.png";

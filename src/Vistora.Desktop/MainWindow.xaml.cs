@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Vistora.Automation.Edge;
 using Vistora.Core;
 using Vistora.Infrastructure;
@@ -26,11 +27,25 @@ public partial class MainWindow : Window
     private bool closing;
     private VisitProfile? ActiveProfile => ProfilePicker.SelectedItem as VisitProfile;
 
-    public MainWindow(bool preview = false, bool pendingPreview = false)
+    private sealed record PageInfo(string Name, string Title, string Subtitle);
+    private static readonly PageInfo[] PageList =
+    [
+        new("Executar visita", "Executar visita preventiva", "Escolha a unidade e os pavimentos que você visitou."),
+        new("Perfis e pavimentos", "Perfis e pavimentos", "Organize os dados de cada solicitante e unidade."),
+        new("Histórico", "Histórico de visitas", "Confira os chamados e retome uma execução interrompida."),
+        new("Configurações", "Configurações", "Defina onde a automação deve abrir os chamados.")
+    ];
+    private readonly int startPage;
+    // Controles que ficam bloqueados durante uma execução; só o botão Parar permanece ativo.
+    private UIElement[] BusyLocked => [RunSetup, RunActions, ProfileActions, HistoryActions, SettingsPanel];
+
+    public MainWindow(bool preview = false, bool pendingPreview = false, int startPage = 0)
     {
         this.preview = preview;
         this.pendingPreview = pendingPreview;
+        this.startPage = Math.Clamp(startPage, 0, PageList.Length - 1);
         InitializeComponent();
+        RailItems.ItemsSource = PageList;
         store = new LocalStore(preview ? Path.Combine(Path.GetTempPath(), "VistoraPreview", Guid.NewGuid().ToString("N")) : null);
         engine = new ExecutionEngine(store, () => new EdgeJiraAutomation(store));
         engine.Progress += run => Dispatcher.Invoke(() => ShowProgress(run));
@@ -48,13 +63,23 @@ public partial class MainWindow : Window
                 example.Unit = "Configure o nome da sua unidade";
                 profiles.Profiles.Add(example); profiles.ActiveProfileId = example.Id;
                 if (pendingPreview)
+                {
+                    var stages = new[] { FloorStage.Closed, FloorStage.Closed, FloorStage.Started, FloorStage.Assigned, FloorStage.Created, FloorStage.Pending };
                     runs.Add(new VisitRun
                     {
                         Profile = Serialization.Copy(example), State = RunState.Interrupted,
-                        CreatedAt = DateTimeOffset.Now.AddMinutes(-8),
+                        CreatedAt = DateTimeOffset.Now.AddMinutes(-8), Message = "Execução interrompida. Retome para continuar.",
                         Floors = example.Floors.Select((f, i) => new FloorRun
-                        { Floor = Serialization.Copy(f), IssueKey = $"SD-{1001 + i}", Stage = FloorStage.Created, Message = "Chamado aberto" }).ToList()
+                        { Floor = Serialization.Copy(f), IssueKey = stages[i % stages.Length] == FloorStage.Pending ? null : $"SD-{1001 + i}", Stage = stages[i % stages.Length], Message = "Chamado aberto" }).ToList()
                     });
+                    // Outros estados no histórico, de perfis distintos para não gerar pendência no perfil ativo.
+                    foreach (var (state, label, minutes) in new[] { (RunState.Completed, "Concluída", -1500), (RunState.NeedsReconciliation, "Vincular", -2900), (RunState.Failed, "Falha", -4400) })
+                    {
+                        var other = Serialization.Copy(example); other.Id = Guid.NewGuid().ToString("N"); other.Name = $"Unidade {label}";
+                        runs.Add(new VisitRun { Profile = other, State = state, CreatedAt = DateTimeOffset.Now.AddMinutes(minutes), Message = label,
+                            Floors = other.Floors.Select(f => new FloorRun { Floor = f, Stage = state == RunState.Completed ? FloorStage.Closed : FloorStage.Pending }).ToList() });
+                    }
+                }
             }
             else
             {
@@ -108,6 +133,7 @@ public partial class MainWindow : Window
     {
         FloorGrid.ItemsSource = ActiveProfile?.Floors;
         FloorGrid.SelectedIndex = ActiveProfile?.Floors.Count > 0 ? 0 : -1;
+        ShowRunFloors(null);
         ProfileSummary.Text = ActiveProfile is { } p ? $"{(p.Unit.Length > 0 ? p.Unit : "Unidade a configurar")}\nSolicitante: {(p.ReporterName.Length > 0 ? p.ReporterName : "a configurar")}" : "Crie um perfil para começar.";
         UpdateSelectionSummary();
         UpdateResumeNotice();
@@ -124,8 +150,16 @@ public partial class MainWindow : Window
             var run = VisitRunSelection.PendingForProfile(runs, ActiveProfile!.Id)!;
             var count = run.Floors.Count(f => f.IssueKey is not null);
             PendingVisitNotice.Text = $"Visita pendente de {run.DateLabel}: {count} chamados registrados. A execução continuará com os dados e o progresso dessa visita.";
+            ShowRunFloors(run);
         }
         catch (InvalidOperationException ex) { PendingVisitNotice.Text = ex.Message; }
+    }
+    // Lista compacta de pavimentos com etapa e chamado da execução em foco (ativa, concluída ou pendente).
+    private void ShowRunFloors(VisitRun? run)
+    {
+        RunFloorList.ItemsSource = null; RunFloorList.ItemsSource = run?.Floors; // reatribui para redesenhar as etapas
+        RunFloorsScroll.Visibility = run is { Floors.Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+        RunProgress.Value = run is null || run.Floors.Count == 0 ? 0 : run.Floors.Sum(f => (int)f.Stage) * 100d / (run.Floors.Count * 4);
     }
     private void UpdateSelectionSummary() => SelectionSummary.Text = $"Pavimentos selecionados: {ActiveProfile?.Floors.Count(f => f.Selected) ?? 0}";
     private async void ProfileChanged(object sender, SelectionChangedEventArgs e)
@@ -137,13 +171,16 @@ public partial class MainWindow : Window
     }
     private void FloorSelected(object sender, SelectionChangedEventArgs e) => ResolutionPreview.Text = (FloorGrid.SelectedItem as Floor)?.Resolution ?? "Selecione um pavimento para conferir seu texto.";
     private void SelectionChanged(object sender, RoutedEventArgs e) { if (SelectionSummary is not null) UpdateSelectionSummary(); }
-    private void Navigate(object sender, RoutedEventArgs e)
+    private void RailItemLoaded(object sender, RoutedEventArgs e)
     {
-        var index = int.Parse((string)((Button)sender).Tag);
-        Pages.SelectedIndex = index;
-        var titles = new[] { "Executar visita preventiva", "Perfis e pavimentos", "Histórico de visitas", "Configurações" };
-        var subtitles = new[] { "Escolha a unidade e os pavimentos que você visitou.", "Organize os dados de cada solicitante e unidade.", "Confira os chamados e retome uma execução interrompida.", "Defina onde a automação deve abrir os chamados." };
-        PageTitle.Text = titles[index]; PageSubtitle.Text = subtitles[index];
+        var item = (RadioButton)sender;
+        if (ReferenceEquals(item.DataContext, PageList[startPage])) item.IsChecked = true;
+    }
+    private void PageChecked(object sender, RoutedEventArgs e)
+    {
+        var page = (PageInfo)((RadioButton)sender).DataContext;
+        Pages.SelectedIndex = Array.IndexOf(PageList, page);
+        PageTitle.Text = page.Title; PageSubtitle.Text = page.Subtitle;
     }
 
     private async Task SaveProfileAsync(VisitProfile profile, bool newProfile)
@@ -183,7 +220,8 @@ public partial class MainWindow : Window
     private void SetBusy(bool value)
     {
         busy = value;
-        foreach (var control in new UIElement[] { ProfilePicker, FloorGrid, EditActiveButton, ExecuteButton, ConnectButton, NewProfileButton, EditProfileButton, DuplicateButton, DeleteButton, SettingsPanel, ResumeButton, LinkButton }) control.IsEnabled = !value;
+        foreach (var control in BusyLocked) control.IsEnabled = !value;
+        StopButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         StopButton.IsEnabled = value;
     }
     private async void Execute(object sender, RoutedEventArgs e)
@@ -223,8 +261,7 @@ public partial class MainWindow : Window
     {
         ClosingTeamSummary.Text = $"Equipe de fechamento: {run.Settings.ClosingTeam}";
         ExecutionMessage.Text = run.Message;
-        var stages = run.Floors.Sum(f => (int)f.Stage);
-        RunProgress.Value = run.Floors.Count == 0 ? 0 : stages * 100d / (run.Floors.Count * 4);
+        ShowRunFloors(run);
         HistoryGrid.Items.Refresh();
         if (HistoryGrid.SelectedItem is VisitRun selected && selected.Id == run.Id)
         { HistoryMessage.Text = run.Message; RunFloorGrid.Items.Refresh(); }
@@ -278,24 +315,15 @@ public partial class MainWindow : Window
         if (busy || HistoryGrid.SelectedItem is not VisitRun run || RunFloorGrid.SelectedItem is not FloorRun floor) return;
         if (floor.IssueKey is not null || floor.PendingAction != PendingAction.Create)
         { MessageBox.Show(this, "Selecione um pavimento cuja abertura foi enviada e cujo número ainda não foi identificado.", "Vistora"); return; }
-        var key = AskForIssueKey(floor.Name);
-        if (key is null) return;
+        var dialog = new IssueKeyWindow(floor.Name) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        var key = dialog.IssueKey;
         await SafeAsync(async () =>
         {
             SetBusy(true); cancellation = new CancellationTokenSource();
-            try { activeTask = engine.AttachIssueAsync(run, floor, key.Trim().ToUpperInvariant(), cancellation.Token); await activeTask; }
+            try { activeTask = engine.AttachIssueAsync(run, floor, key, cancellation.Token); await activeTask; }
             finally { activeTask = null; cancellation.Dispose(); cancellation = null; SetBusy(false); RefreshHistory(run.Id); }
         });
-    }
-    private string? AskForIssueKey(string floorName)
-    {
-        var dialog = new Window { Owner = this, Title = "Vincular chamado", Width = 470, Height = 250, ResizeMode = ResizeMode.NoResize, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        var panel = new StackPanel { Margin = new Thickness(24) };
-        panel.Children.Add(new TextBlock { Text = $"Informe o chamado já criado para {floorName}.\nOs dados serão conferidos no Jira antes do vínculo.", TextWrapping = TextWrapping.Wrap });
-        var field = new TextBox { Margin = new Thickness(0, 16, 0, 16) }; panel.Children.Add(field);
-        var button = new Button { Content = "Conferir e vincular", Style = (Style)FindResource("Primary") };
-        button.Click += (_, _) => { dialog.DialogResult = true; }; panel.Children.Add(button); dialog.Content = panel;
-        return dialog.ShowDialog() == true ? field.Text : null;
     }
     private void OpenIssue(object sender, RoutedEventArgs e)
     {
@@ -311,19 +339,24 @@ public partial class MainWindow : Window
     private async void SaveSettings(object sender, RoutedEventArgs e)
     {
         if (busy) return;
+        var copy = Serialization.Copy(settings);
+        copy.JiraUrl = JiraUrlBox.Text.Trim().TrimEnd('/'); copy.PortalUrl = PortalUrlBox.Text.Trim(); copy.QueueUrl = QueueUrlBox.Text.Trim();
+        if (!int.TryParse(TimeoutBox.Text, out var timeout)) { ShowSettingsStatus("Informe o tempo de espera em segundos.", true); return; }
+        copy.TimeoutSeconds = timeout;
+        var errors = ProfileValidation.ValidateSettings(copy);
+        if (errors.Count > 0) { ShowSettingsStatus(string.Join(Environment.NewLine, errors), true); return; }
         await SafeAsync(async () =>
         {
-            var copy = Serialization.Copy(settings);
-            copy.JiraUrl = JiraUrlBox.Text.Trim().TrimEnd('/'); copy.PortalUrl = PortalUrlBox.Text.Trim(); copy.QueueUrl = QueueUrlBox.Text.Trim();
-            if (!int.TryParse(TimeoutBox.Text, out var timeout)) throw new InvalidOperationException("Informe o tempo de espera em segundos.");
-            copy.TimeoutSeconds = timeout;
-            var validationProfile = new VisitProfile { Floors = [new Floor { Resolution = "Teste" }] };
-            var errors = ProfileValidation.Validate(validationProfile, copy).Where(message => message.Contains("HTTPS", StringComparison.OrdinalIgnoreCase) || message.Contains("https://", StringComparison.OrdinalIgnoreCase) || message.Contains("tempo de espera", StringComparison.OrdinalIgnoreCase)).ToList();
-            if (errors.Count > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
             await store.SaveSettingsAsync(copy); settings = copy;
-            MessageBox.Show(this, "Configurações salvas.", "Vistora");
+            ShowSettingsStatus("Configurações salvas.", false);
         });
     }
+    private void ShowSettingsStatus(string text, bool error)
+    {
+        SettingsStatus.Text = text;
+        SettingsStatus.Foreground = (Brush)FindResource(error ? "Red" : "Teal");
+    }
+    private void SettingsEdited(object sender, TextChangedEventArgs e) => SettingsStatus.Text = "";
     private void OpenData(object sender, RoutedEventArgs e) => OpenPath(store.Root);
     private static void OpenPath(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     private async Task SafeAsync(Func<Task> operation)
