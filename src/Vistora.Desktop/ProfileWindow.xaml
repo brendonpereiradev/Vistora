@@ -6,7 +6,6 @@
     </StackPanel>
     <Grid DockPanel.Dock="Bottom" Margin="0,18,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <TextBlock Text="Os dados ficam salvos neste computador." Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
       <StackPanel Grid.Column="1" Orientation="Horizontal"><Button Content="Cancelar" Click="Cancel"/><Button Content="Salvar perfil" Style="{StaticResource Primary}" Margin="0" Click="Save"/></StackPanel>
     </Grid>
     <TabControl Background="Transparent">

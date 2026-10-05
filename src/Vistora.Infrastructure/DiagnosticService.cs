@@ -19,7 +19,8 @@ public sealed partial class DiagnosticService : IDiagnosticSink, IAsyncDisposabl
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Converters = { new JsonStringEnumConverter() }
     };
-    private sealed record Work(DiagnosticEvent? Event = null, string? Relative = null, string? Json = null, TaskCompletionSource? Completion = null);
+    private sealed record Work(DiagnosticEvent? Event = null, string? Relative = null, string? Json = null,
+        TaskCompletionSource? Completion = null, Func<Task>? Operation = null);
     private readonly Channel<Work> queue;
     private readonly int queueCapacity;
     private readonly ConcurrentQueue<DiagnosticEvent> fallback = new();
@@ -76,7 +77,7 @@ public sealed partial class DiagnosticService : IDiagnosticSink, IAsyncDisposabl
     {
         options = new DiagnosticOptions
         {
-            MinimumLevel = value is not null && Enum.IsDefined(value.MinimumLevel) ? value.MinimumLevel : DiagnosticLevel.Information,
+            MinimumLevel = DiagnosticLevel.Debug,
             RetentionDays = Math.Clamp(value?.RetentionDays ?? 30, 1, 365),
             MaxStorageMegabytes = Math.Clamp(value?.MaxStorageMegabytes ?? 200, 1, 2000),
             RotationMegabytes = Math.Clamp(value?.RotationMegabytes ?? 10, 1, 100)
@@ -108,7 +109,7 @@ public sealed partial class DiagnosticService : IDiagnosticSink, IAsyncDisposabl
         // No arbitrary application object is retained by the background writer.
         lock (enqueueGate)
         {
-            if (disposed != 0) return;
+            if (disposed != 0 || (clearingVisits && entry.RunId is not null)) return;
             if (entry.Level == DiagnosticLevel.Debug && queue.Reader.Count >= queueCapacity * 3 / 4) { Lost(); return; }
             var key = entry.AttemptId ?? SessionId;
             sequences[key] = sequences.GetValueOrDefault(key) + 1;
@@ -152,18 +153,29 @@ public sealed partial class DiagnosticService : IDiagnosticSink, IAsyncDisposabl
     private DiagnosticError? CleanError(DiagnosticError? error) => error is null ? null : error with
     { Message = sanitizer.Clean(error.Message), StackTrace = sanitizer.Clean(error.StackTrace), Inner = CleanError(error.Inner) };
     private static bool SafeArtifact(string path) => System.Text.RegularExpressions.Regex.IsMatch(path, @"^artifacts/[a-zA-Z0-9_-]+\.png$");
-    private void Enqueue(Work work) { if (!queue.Writer.TryWrite(work)) Lost(); }
+    private void Enqueue(Work work)
+    {
+        lock (enqueueGate)
+        {
+            if (clearingVisits && work.Relative?.StartsWith("diagnostics" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true) return;
+            if (!queue.Writer.TryWrite(work)) Lost();
+        }
+    }
 
     public void StartAttempt(AttemptSummary summary, VisitRun run)
     {
-        Register(run);
-        active[summary.AttemptId] = 0;
-        summaries[summary.AttemptId] = summary;
-        var environment = EnvironmentSnapshot(run.Settings);
-        environments[summary.AttemptId] = environment;
-        var directory = AttemptDirectory(summary.RunId, summary.AttemptId);
-        Enqueue(new(Relative: Path.Combine(directory, "environment.json"), Json: JsonSerializer.Serialize(environment, JsonOptions)));
-        Enqueue(new(Relative: Path.Combine(directory, "summary.json"), Json: JsonSerializer.Serialize(summary, JsonOptions)));
+        lock (enqueueGate)
+        {
+            if (clearingVisits) throw new InvalidOperationException("Aguarde a limpeza do histórico antes de executar uma visita.");
+            Register(run);
+            active[summary.AttemptId] = 0;
+            summaries[summary.AttemptId] = summary;
+            var environment = EnvironmentSnapshot(run.Settings);
+            environments[summary.AttemptId] = environment;
+            var directory = AttemptDirectory(summary.RunId, summary.AttemptId);
+            Enqueue(new(Relative: Path.Combine(directory, "environment.json"), Json: JsonSerializer.Serialize(environment, JsonOptions)));
+            Enqueue(new(Relative: Path.Combine(directory, "summary.json"), Json: JsonSerializer.Serialize(summary, JsonOptions)));
+        }
     }
     public async Task FinishAttemptAsync(AttemptSummary summary)
     {
@@ -178,9 +190,13 @@ public sealed partial class DiagnosticService : IDiagnosticSink, IAsyncDisposabl
     }
     public void UpdateAttempt(AttemptSummary summary)
     {
-        summaries[summary.AttemptId] = summary;
-        Enqueue(new(Relative: Path.Combine(AttemptDirectory(summary.RunId, summary.AttemptId), "summary.json"),
-            Json: JsonSerializer.Serialize(summary, JsonOptions)));
+        lock (enqueueGate)
+        {
+            if (clearingVisits) return;
+            summaries[summary.AttemptId] = summary;
+            Enqueue(new(Relative: Path.Combine(AttemptDirectory(summary.RunId, summary.AttemptId), "summary.json"),
+                Json: JsonSerializer.Serialize(summary, JsonOptions)));
+        }
     }
     public void UpdateBrowserVersion(string attemptId, string? version, string? playwrightVersion)
     {
@@ -230,11 +246,16 @@ public sealed partial class DiagnosticService : IDiagnosticSink, IAsyncDisposabl
                 if (work.Event is not null) await AppendAsync(work.Event);
                 if (work.Relative is not null && work.Json is not null) await AtomicTextAsync(Path.Combine(Root, work.Relative), work.Json);
                 while (fallback.TryDequeue(out var entry)) await AppendAsync(entry);
+                if (work.Operation is not null) await work.Operation();
             }
-            catch
+            catch (Exception ex)
             {
-                Lost();
-                if (work.Event is not null && fallback.Count < 128) fallback.Enqueue(work.Event);
+                if (work.Operation is not null) work.Completion?.TrySetException(ex);
+                else
+                {
+                    Lost();
+                    if (work.Event is not null && fallback.Count < 128) fallback.Enqueue(work.Event);
+                }
             }
             finally { filesGate.Release(); work.Completion?.TrySetResult(); }
         }

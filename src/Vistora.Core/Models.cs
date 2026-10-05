@@ -98,7 +98,7 @@ public sealed class VisitRun
     [JsonIgnore] public string StateLabel => State switch
     {
         RunState.Completed => "Concluída", RunState.Running => "Em execução", RunState.Interrupted => "Interrompida",
-        RunState.NeedsReconciliation => "Vincular chamado", _ => "Requer atenção"
+        RunState.NeedsReconciliation => "Precisa de conferência", _ => "Requer atenção"
     };
     [JsonIgnore] public string ProgressLabel => $"{Floors.Count(f => f.Stage == FloorStage.Closed)} de {Floors.Count} fechados";
 }

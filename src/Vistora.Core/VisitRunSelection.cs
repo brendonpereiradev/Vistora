@@ -3,16 +3,20 @@ namespace Vistora.Core;
 // Uma tentativa vazia não deve esconder a visita que já tem chamados no Jira.
 public static class VisitRunSelection
 {
+    public static List<VisitRun> Pending(IEnumerable<VisitRun> runs) => runs
+        .Where(r => r.State != RunState.Completed)
+        .OrderByDescending(HasProgress).ThenByDescending(r => r.CreatedAt).ToList();
+
     public static VisitRun? PendingForProfile(IEnumerable<VisitRun> runs, string profileId)
     {
         var pending = runs.Where(r => r.Profile.Id == profileId && r.State != RunState.Completed).ToList();
         var withIssues = pending.Where(r => r.Floors.Any(f => f.IssueKey is not null)).ToList();
         if (withIssues.Count > 1)
-            throw new InvalidOperationException("Este perfil tem mais de uma visita pendente com chamados. Selecione a visita no histórico e clique em Retomar execução.");
+            throw new InvalidOperationException("Este perfil tem mais de uma visita pendente com chamados. Selecione a visita pendente em Executar visita antes de retomar.");
         if (withIssues.Count == 1) return withIssues[0];
         var withProgress = pending.Where(HasProgress).ToList();
         if (withProgress.Count > 1)
-            throw new InvalidOperationException("Este perfil tem mais de uma abertura que precisa de conferência. Selecione a visita no histórico; nenhum novo chamado foi aberto.");
+            throw new InvalidOperationException("Este perfil tem mais de uma abertura que precisa de conferência. Selecione a visita pendente em Executar visita; nenhum novo chamado foi aberto.");
         return withProgress.SingleOrDefault() ?? pending.OrderBy(r => r.CreatedAt).FirstOrDefault();
     }
 

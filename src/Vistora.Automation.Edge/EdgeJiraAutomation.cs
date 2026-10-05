@@ -32,7 +32,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
         }
         catch (PlaywrightException ex)
         {
-            throw new InvalidOperationException("Não foi possível abrir o Microsoft Edge. Confira se ele está instalado e se a máquina permite abrir a janela de automação.", ex);
+            throw new InvalidOperationException("Não foi possível abrir o navegador de automação. Confira a instalação do navegador e se a máquina permite abrir sua janela.", ex);
         }
         page = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
         page.SetDefaultTimeout(settings.TimeoutSeconds * 1000);
@@ -85,7 +85,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
                 {
                     var timeoutError = new InvalidOperationException(initialIssueKey is null
                         ? "O formulário de visita preventiva abriu, mas seus campos ainda não foram reconhecidos. Confira a página e o diagnóstico da execução."
-                        : $"O chamado {initialIssueKey} abriu, mas seu status ainda não carregou. Retome pelo histórico quando estiver pronto.");
+                        : $"O chamado {initialIssueKey} abriu, mas seu status ainda não carregou. Retome pela aba Executar visita quando estiver pronto.");
                     timeoutError.Data["DiagnosticCode"] = "FORM_LOAD_TIMEOUT"; throw timeoutError;
                 }
             }
@@ -207,7 +207,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
             if (keys.Count == 1 && Page.Url != oldUrl) return keys.Single();
             await Task.Delay(300);
         }
-        throw new ReconciliationException($"O formulário de {floor.Name} foi enviado, mas o número do chamado não foi identificado. Confira o Jira e vincule o número pelo histórico.");
+        throw new ReconciliationException($"O formulário de {floor.Name} foi enviado, mas o número do chamado não foi identificado. Confira o Jira e informe o número ao retomar pela aba Executar visita.");
     }
 
     private string IssueUrl(string key) => $"{settings.JiraUrl.TrimEnd('/')}/jira/servicedesk/projects/{key.Split('-')[0]}/queues/issue/{key}";
@@ -279,7 +279,7 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
             if (count == 1 && await button.IsEnabledAsync()) return button;
             await Task.Delay(200, cancellationToken);
         } while (DateTimeOffset.UtcNow < deadline);
-        throw new InvalidOperationException("O controle de status do chamado não carregou no tempo esperado. Confira a página e retome pelo histórico.");
+        throw new InvalidOperationException("O controle de status do chamado não carregou no tempo esperado. Confira a página e retome pela aba Executar visita.");
     }
 
     private async Task<ILocator> StatusButtonLocatorAsync()
@@ -359,10 +359,67 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
 
     public async Task SubmitCloseAsync(VisitRun run, FloorRun floor)
     {
-        if (closingDialog is null) throw new InvalidOperationException("O formulário de fechamento ainda não foi preparado.");
-        await Ui.ClickAsync("close.submit", ["Transitar para Fechado"], closingDialog);
-        closingDialog = null;
-        await WaitStatusAsync("Fechado", "Closed", "Concluído");
+        var dialog = closingDialog ?? throw new InvalidOperationException("O formulário de fechamento ainda não foi preparado.");
+        var pending = new HashSet<IRequest>();
+        var sync = new object();
+        var lastActivity = Stopwatch.GetTimestamp();
+        var mutations = 0;
+        void Requested(object? sender, IRequest request)
+        {
+            if (request.Method is not ("POST" or "PUT" or "PATCH" or "DELETE") ||
+                request.ResourceType is not ("fetch" or "xhr" or "document") ||
+                !Uri.TryCreate(request.Url, UriKind.Absolute, out var uri) ||
+                !string.Equals(uri.Authority, new Uri(settings.JiraUrl).Authority, StringComparison.OrdinalIgnoreCase)) return;
+            lock (sync) { pending.Add(request); mutations++; lastActivity = Stopwatch.GetTimestamp(); }
+        }
+        void Finished(object? sender, IRequest request)
+        {
+            lock (sync) { if (pending.Remove(request)) lastActivity = Stopwatch.GetTimestamp(); }
+        }
+        Page.Request += Requested;
+        Page.RequestFinished += Finished;
+        Page.RequestFailed += Finished;
+        var begin = Stopwatch.GetTimestamp();
+        try
+        {
+            await Ui.ClickAsync("close.submit", ["Transitar para Fechado"], dialog);
+            lock (sync) { lastActivity = Stopwatch.GetTimestamp(); }
+            diagnostics?.Event("close.wait_started", "Aguardando o término do envio do fechamento.");
+            // O Jira pode exibir Fechado antes de salvar. Não navegar enquanto o modal
+            // ou as requisições de gravação estiverem ativos, mesmo com esse status.
+            do
+            {
+                bool settled;
+                lock (sync) { settled = pending.Count == 0 && Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 500; }
+                if (settled && !await dialog.IsVisibleAsync())
+                {
+                    var statusButton = await StatusButtonLocatorAsync();
+                    if (await DomControls.IsUniqueVisibleAsync(statusButton) && await statusButton.IsEnabledAsync())
+                    {
+                        var status = DomControls.Normalize(await statusButton.InnerTextAsync());
+                        if (new[] { "Fechado", "Closed", "Concluído", "Concluido" }.Contains(status, StringComparer.OrdinalIgnoreCase))
+                        {
+                            lock (sync) { settled = pending.Count == 0 && Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 500; }
+                            if (!settled) continue;
+                            diagnostics?.Event("close.wait_finished", "Envio encerrado; o fechamento será conferido na página recarregada.",
+                                details: new() { ["mutationCount"] = mutations }, durationMs: Stopwatch.GetElapsedTime(begin).TotalMilliseconds);
+                            return;
+                        }
+                    }
+                }
+                await Task.Delay(200);
+            } while (Stopwatch.GetElapsedTime(begin) < TimeSpan.FromSeconds(settings.TimeoutSeconds));
+            var error = new ReconciliationException($"O envio do fechamento de {floor.IssueKey} não terminou no tempo esperado. O progresso foi salvo; confira o Jira antes de tentar novamente.");
+            error.Data["DiagnosticCode"] = "CLOSE_SUBMISSION_UNCONFIRMED";
+            throw error;
+        }
+        finally
+        {
+            closingDialog = null;
+            Page.Request -= Requested;
+            Page.RequestFinished -= Finished;
+            Page.RequestFailed -= Finished;
+        }
     }
 
     private async Task WaitStatusAsync(params string[] expected)

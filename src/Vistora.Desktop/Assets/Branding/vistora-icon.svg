@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Ícone do Vistora</title>
+  <desc id="desc">Monograma V em verde-claro e branco sobre um quadrado azul-petróleo com cantos arredondados.</desc>
+  <rect width="256" height="256" rx="62" fill="#123743"/>
+  <path fill="#7FD1BE" d="M38 88H80Q87 88 91 95L126 157Q130 164 134 174L125 190Q120 200 110 200H94Q86 200 81 191L33 100Q27 88 38 88Z"/>
+  <path fill="#FFFFFF" d="M120 132L169 62Q175 53 184 53H224L145 166Q140 174 136 167Z"/>
+</svg>

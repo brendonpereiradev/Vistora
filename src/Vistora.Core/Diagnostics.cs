@@ -8,7 +8,7 @@ public enum DiagnosticLevel { Debug, Information, Warning, Error }
 
 public sealed class DiagnosticOptions
 {
-    public DiagnosticLevel MinimumLevel { get; set; } = DiagnosticLevel.Information;
+    public DiagnosticLevel MinimumLevel { get; set; } = DiagnosticLevel.Debug;
     public int RetentionDays { get; set; } = 30;
     public int MaxStorageMegabytes { get; set; } = 200;
     public int RotationMegabytes { get; set; } = 10;

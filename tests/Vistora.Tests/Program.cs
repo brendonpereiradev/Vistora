@@ -21,8 +21,16 @@ var tests = new (string Name, Func<Task> Test)[]
     ("Executar e retomar priorizam os seis chamados sobre tentativas vazias", ResumeSelection),
     ("Visitas de outros perfis e seleções ambíguas não são misturadas", SelectionGuards),
     ("Abertura incerta em qualquer pavimento impede outras criações", UncertainPreflight),
-    ("Retomada de etapas diferentes pula todas as ações já concluídas", ResumeStages)
-}.Concat(DiagnosticTests.Cases).ToArray();
+    ("Retomada de etapas diferentes pula todas as ações já concluídas", ResumeStages),
+    ("A lista de pendências inclui perfis excluídos e preserva a seleção explícita", PendingVisits),
+    ("Retomada confere todas as aberturas incertas antes de continuar", ResumeWithReconciliation),
+    ("Cancelar a conferência mantém os vínculos salvos sem abrir chamados", CancelResumeReconciliation),
+    ("Chamado divergente impede a continuação da retomada", WrongResumeIssue),
+    ("Cancelar após informar o número impede a vinculação e a retomada", CancelResumeToken)
+    ,("Fechamento incerto só é repetido após conferência explícita", RetryUnconfirmedClose),
+    ("Conferência recusada ou cancelada preserva o fechamento pendente", DeclineCloseRetry),
+    ("Status ou responsável divergente impede autorizar novo fechamento", UnsafeCloseRetry)
+}.Concat(DiagnosticTests.Cases).Concat(HistoryCleanupTests.Cases).ToArray();
 var failed = 0;
 foreach (var (name, test) in tests)
 {
@@ -75,6 +83,56 @@ static async Task UncertainClose()
     fake.FailAfterClose = false;
     await engine.ExecuteAsync(run, default);
     Check(run.State == RunState.Completed && fake.Closes == 2, "Fechamento foi reenviado.");
+}
+static (VisitRun Run, FakeJira Jira) PendingCloseRun()
+{
+    var run = Run(1);
+    var floor = run.Floors[0]; floor.IssueKey = "SD-5000"; floor.Stage = FloorStage.Started; floor.PendingAction = PendingAction.Close;
+    run.State = RunState.NeedsReconciliation;
+    var fake = new FakeJira(); fake.Issues.Add(floor.IssueKey, new(floor.Floor) { Assigned = true, Started = true });
+    return (run, fake);
+}
+static async Task RetryUnconfirmedClose()
+{
+    var (run, fake) = PendingCloseRun(); var memory = new MemoryStore(); var engine = new ExecutionEngine(memory, () => fake);
+    await engine.ResumeAsync(run, _ => throw new Exception("Solicitou abertura."), default);
+    Check(run.State == RunState.NeedsReconciliation && fake.Closes == 0, "Repetiu fechamento sem conferência.");
+    var confirmations = 0;
+    await engine.ResumeAsync(run, _ => throw new Exception("Solicitou abertura."), default, (floor, snapshot) =>
+    {
+        confirmations++;
+        Check(floor.IssueKey == "SD-5000" && snapshot.Started && snapshot.AssignedToCurrentUser, "Conferiu outro chamado ou estado.");
+        return Task.FromResult(true);
+    });
+    Check(run.State == RunState.Completed && confirmations == 1 && fake.Creates == 0 && fake.Closes == 1, run.Message);
+    Check(memory.Saves.Any(saved => saved.Message.Contains("autorizado após conferência") && saved.Floors[0].PendingAction == PendingAction.None), "Autorização não foi salva.");
+}
+static async Task DeclineCloseRetry()
+{
+    foreach (var cancel in new[] { false, true })
+    {
+        var (run, fake) = PendingCloseRun(); using var cancellation = new CancellationTokenSource();
+        await new ExecutionEngine(new MemoryStore(), () => fake).ResumeAsync(run, _ => Task.FromResult<string?>(null), cancellation.Token, (_, _) =>
+        {
+            if (cancel) cancellation.Cancel();
+            return Task.FromResult(cancel);
+        });
+        Check(fake.Closes == 0 && run.Floors[0].PendingAction == PendingAction.Close &&
+            run.State == (cancel ? RunState.Interrupted : RunState.NeedsReconciliation), "Perdeu a pendência ou enviou após recusa/cancelamento.");
+    }
+}
+static async Task UnsafeCloseRetry()
+{
+    foreach (var unsafeState in new[] { "status", "assignee", "previously_closed" })
+    {
+        var (run, fake) = PendingCloseRun(); var confirmations = 0;
+        if (unsafeState == "status") fake.Issues["SD-5000"].Started = false;
+        if (unsafeState == "assignee") fake.Issues["SD-5000"].Assigned = false;
+        if (unsafeState == "previously_closed") run.Floors[0].Stage = FloorStage.Closed;
+        await new ExecutionEngine(new MemoryStore(), () => fake).ResumeAsync(run, _ => Task.FromResult<string?>(null), default, (_, _) =>
+        { confirmations++; return Task.FromResult(true); });
+        Check(confirmations == 0 && fake.Closes == 0 && run.State == RunState.NeedsReconciliation, "Liberou fechamento com estado divergente.");
+    }
 }
 static async Task CancelAfterCreate()
 {
@@ -216,6 +274,89 @@ static async Task ResumeStages()
     Check(run.State == RunState.Completed && fake.Creates == 0 && fake.Closes == 5, run.Message);
     Check(fake.Actions.Count(a => a.StartsWith("assign:")) == 3 && fake.Actions.Count(a => a.StartsWith("start:")) == 4, "Repetiu atribuição ou início concluído.");
     Check(fake.InitialIssueKey == run.Floors[1].IssueKey, "Não abriu o primeiro pavimento ainda pendente.");
+}
+
+static Task PendingVisits()
+{
+    var first = Run(1); first.Floors[0].IssueKey = "SD-1";
+    var second = ProfileValidation.CreateRun(first.Profile, first.Settings); second.Floors[0].PendingAction = PendingAction.Create;
+    var empty = ProfileValidation.CreateRun(first.Profile, first.Settings); empty.CreatedAt = first.CreatedAt.AddHours(1);
+    var deletedProfile = Run(1); deletedProfile.Floors[0].IssueKey = "SD-2";
+    var completed = Run(1); completed.State = RunState.Completed;
+    var history = new[] { empty, completed, deletedProfile, first, second };
+    var pending = VisitRunSelection.Pending(history);
+    Check(pending.Count == 4 && !pending.Contains(completed) && pending.Contains(deletedProfile), "Uma pendência ficou inacessível.");
+    Check(pending.Last() == empty, "Tentativa vazia ocultou as visitas com progresso.");
+    Check(VisitRunSelection.ForResume(history, second) == second, "A abertura incerta selecionada foi substituída.");
+    Check(VisitRunSelection.ForResume(history, deletedProfile) == deletedProfile, "A retomada dependeu do cadastro do perfil.");
+    return Task.CompletedTask;
+}
+
+static async Task ResumeWithReconciliation()
+{
+    var run = Run(2); var fake = new FakeJira(); var memory = new MemoryStore();
+    foreach (var (floor, index) in run.Floors.Select((floor, index) => (floor, index)))
+    {
+        floor.PendingAction = PendingAction.Create;
+        fake.Issues.Add($"SD-{5000 + index}", new(floor.Floor));
+    }
+    var requested = 0;
+    var resumed = await new ExecutionEngine(memory, () => fake).ResumeAsync(run, floor =>
+    {
+        Check(fake.Creates == 0 && fake.Closes == 0, "Executou antes de conferir todos os chamados.");
+        requested++;
+        return Task.FromResult<string?>($" sd-{5000 + run.Floors.IndexOf(floor)} ");
+    }, default);
+    Check(resumed && requested == 2 && run.State == RunState.Completed, "A conferência não levou à conclusão.");
+    Check(fake.Creates == 0 && fake.Closes == 2, "Reabriu chamados já vinculados.");
+    Check(memory.Saves.Any(r => r.Floors.All(f => f.IssueKey is not null) && r.State != RunState.Running), "Não salvou os vínculos antes de executar.");
+}
+
+static async Task CancelResumeReconciliation()
+{
+    var run = Run(2); var fake = new FakeJira(); var memory = new MemoryStore();
+    run.State = RunState.NeedsReconciliation;
+    foreach (var floor in run.Floors) floor.PendingAction = PendingAction.Create;
+    fake.Issues.Add("SD-5000", new(run.Floors[0].Floor));
+    var requested = 0;
+    var resumed = await new ExecutionEngine(memory, () => fake).ResumeAsync(run,
+        _ => Task.FromResult<string?>(requested++ == 0 ? "SD-5000" : null), default);
+    Check(!resumed && requested == 2 && run.State != RunState.Completed, "O cancelamento iniciou a execução.");
+    Check(run.Floors[0].IssueKey == "SD-5000" && run.Floors[1].IssueKey is null && run.Floors[1].PendingAction == PendingAction.Create, "O cancelamento perdeu a pendência ou o vínculo.");
+    Check(fake.Creates == 0 && fake.Closes == 0 && memory.Saves.Count == 1, "Executou após cancelar.");
+    var saved = memory.Saves.Single();
+    Check(saved.Floors[0].IssueKey == "SD-5000" && saved.Floors[1].PendingAction == PendingAction.Create, "O vínculo não ficou salvo.");
+}
+
+static async Task WrongResumeIssue()
+{
+    var run = Run(1); run.State = RunState.NeedsReconciliation; run.Floors[0].PendingAction = PendingAction.Create;
+    var fake = new FakeJira(); var memory = new MemoryStore(); fake.Issues.Add("SD-5000", new(Profile(1).Floors[0]));
+    try
+    {
+        await new ExecutionEngine(memory, () => fake).ResumeAsync(run, _ => Task.FromResult<string?>("SD-5000"), default);
+        throw new Exception("Aceitou um chamado de outro pavimento.");
+    }
+    catch (InvalidOperationException) { }
+    Check(run.Floors[0].IssueKey is null && run.Floors[0].PendingAction == PendingAction.Create && run.State == RunState.NeedsReconciliation, "Alterou a pendência após divergência.");
+    Check(fake.Creates == 0 && fake.Closes == 0 && memory.Saves.Count == 0, "Executou após divergência.");
+}
+
+static async Task CancelResumeToken()
+{
+    using var cancellation = new CancellationTokenSource();
+    var run = Run(1); run.Floors[0].PendingAction = PendingAction.Create;
+    var fake = new FakeJira();
+    try
+    {
+        await new ExecutionEngine(new MemoryStore(), () => fake).ResumeAsync(run, _ =>
+        {
+            cancellation.Cancel(); return Task.FromResult<string?>("SD-5000");
+        }, cancellation.Token);
+        throw new Exception("Ignorou o cancelamento.");
+    }
+    catch (OperationCanceledException) { }
+    Check(fake.Connections == 0 && fake.Creates == 0 && run.Floors[0].IssueKey is null, "Vinculou após cancelar.");
 }
 
 sealed class MemoryStore : IRunStore

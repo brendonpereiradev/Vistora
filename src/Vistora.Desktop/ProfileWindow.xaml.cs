@@ -23,6 +23,12 @@ public partial class ProfileWindow : Window
         attachments = new(Profile.Attachments);
         AttachmentsList.ItemsSource = attachments;
     }
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        WindowPlacement.FitStartup(this);
+    }
+
     private void SelectedFloorChanged(object sender, SelectionChangedEventArgs e) => ResolutionBox.DataContext = FloorsGrid.SelectedItem;
     private void AddFloor(object sender, RoutedEventArgs e)
     {

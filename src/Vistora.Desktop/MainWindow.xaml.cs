@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -25,19 +24,23 @@ public partial class MainWindow : Window
     private Task? activeTask;
     private bool loading = true;
     private bool busy;
+    private bool cleaningHistory;
+    private bool exportingLog;
     private bool closing;
+    private bool updatingPendingVisits;
     private VisitProfile? ActiveProfile => ProfilePicker.SelectedItem as VisitProfile;
+    private VisitRun? SelectedPendingRun => (PendingVisitPicker?.SelectedItem as PendingVisitChoice)?.Run;
 
     private sealed record PageInfo(string Name, string Title, string Subtitle);
     private static readonly PageInfo[] PageList =
     [
         new("Executar visita", "Executar visita preventiva", "Escolha a unidade e os pavimentos que você visitou."),
         new("Perfis e pavimentos", "Perfis e pavimentos", "Organize os dados de cada solicitante e unidade."),
-        new("Histórico", "Histórico de visitas", "Confira os chamados e retome uma execução interrompida."),
+        new("Histórico", "Histórico de visitas", "Confira os chamados e os resultados de cada visita."),
         new("Configurações", "Configurações", "Defina onde a automação deve abrir os chamados.")
     ];
-    // Controles que ficam bloqueados durante uma execução; só o botão Parar permanece ativo.
-    private UIElement[] BusyLocked => [RunSetup, RunActions, ProfileActions, HistoryActions, SettingsPanel];
+    // Controles bloqueados durante execução ou limpeza das visitas.
+    private UIElement[] BusyLocked => [RunSetup, RunActions, ProfileActions, SettingsPanel];
 
     public MainWindow(bool preview = false, bool pendingPreview = false, DiagnosticService? diagnostics = null, int startPage = 0)
     {
@@ -53,6 +56,12 @@ public partial class MainWindow : Window
         if (this.diagnostics.Warning is { } warning) ShowDiagnosticWarning(warning);
         engine.Progress += run => Dispatcher.Invoke(() => ShowProgress(run));
         Loaded += async (_, _) => await InitializeAsync();
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        WindowPlacement.FitStartup(this);
     }
 
     private async Task InitializeAsync()
@@ -88,6 +97,7 @@ public partial class MainWindow : Window
             {
                 profiles = await store.LoadProfilesAsync(); settings = await store.LoadSettingsAsync(); runs = await store.LoadRunsAsync();
                 settings.Diagnostics ??= new DiagnosticOptions();
+                settings.Diagnostics.MinimumLevel = DiagnosticLevel.Debug;
                 diagnostics.Configure(settings.Diagnostics);
                 diagnostics.Register(profiles);
                 if (profiles.Profiles.Count == 0)
@@ -98,11 +108,9 @@ public partial class MainWindow : Window
             }
             RefreshProfiles(); RefreshHistory();
             JiraUrlBox.Text = settings.JiraUrl; PortalUrlBox.Text = settings.PortalUrl;
-            QueueUrlBox.Text = settings.QueueUrl; TimeoutBox.Text = settings.TimeoutSeconds.ToString();
-            DetailedLogsBox.IsChecked = settings.Diagnostics.MinimumLevel == DiagnosticLevel.Debug;
-            ClosingTeamSummary.Text = $"Equipe de fechamento: {settings.ClosingTeam}";
-            ExecutionMessage.Text = preview ? "Escolha os pavimentos e confira os textos antes de executar." : "Configure o perfil da unidade e faça login no Edge quando solicitado.";
+            QueueUrlBox.Text = settings.QueueUrl;
             loading = false;
+            UpdateInteraction();
             await diagnostics.CleanAsync();
         }
         catch (Exception ex)
@@ -110,7 +118,6 @@ public partial class MainWindow : Window
             diagnostics.AppEvent("app.initialize_failed", "Não foi possível carregar os dados locais.", DiagnosticLevel.Error, ex, code: "INITIALIZATION_FAILED");
             ExecuteButton.IsEnabled = false;
             ConnectButton.IsEnabled = false;
-            ExecutionMessage.Text = "Não foi possível carregar os dados locais. Os arquivos foram preservados.";
             MessageBox.Show(this, ex.Message, "Vistora", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -136,52 +143,95 @@ public partial class MainWindow : Window
     private void RefreshProfiles(string? selectedId = null)
     {
         var id = selectedId ?? profiles.ActiveProfileId;
-        ProfilePicker.ItemsSource = null; ProfilePicker.ItemsSource = profiles.Profiles;
-        ProfilePicker.SelectedItem = profiles.Profiles.FirstOrDefault(p => p.Id == id) ?? profiles.Profiles.FirstOrDefault();
-        ProfilesGrid.ItemsSource = null; ProfilesGrid.ItemsSource = profiles.Profiles;
-        ShowProfile();
-    }
-    private void ShowProfile()
-    {
-        FloorGrid.ItemsSource = ActiveProfile?.Floors;
-        FloorGrid.SelectedIndex = ActiveProfile?.Floors.Count > 0 ? 0 : -1;
-        ShowRunFloors(null);
-        ProfileSummary.Text = ActiveProfile is { } p ? $"{(p.Unit.Length > 0 ? p.Unit : "Unidade a configurar")}\nSolicitante: {(p.ReporterName.Length > 0 ? p.ReporterName : "a configurar")}" : "Crie um perfil para começar.";
-        UpdateSelectionSummary();
-        UpdateResumeNotice();
-    }
-    private void UpdateResumeNotice()
-    {
-        if (PendingVisitNotice is null || ExecuteButton is null) return;
-        var pending = ActiveProfile is not null && runs.Any(r => r.Profile.Id == ActiveProfile.Id && r.State != RunState.Completed);
-        ExecuteButton.Content = pending ? "Retomar visita preventiva" : "Executar visita preventiva";
-        PendingVisitNotice.Visibility = pending ? Visibility.Visible : Visibility.Collapsed;
-        if (!pending) return;
+        updatingPendingVisits = true;
         try
         {
-            var run = VisitRunSelection.PendingForProfile(runs, ActiveProfile!.Id)!;
-            var count = run.Floors.Count(f => f.IssueKey is not null);
-            PendingVisitNotice.Text = $"Visita pendente de {run.DateLabel}: {count} chamados registrados. A execução continuará com os dados e o progresso dessa visita.";
-            ShowRunFloors(run);
+            ProfilePicker.ItemsSource = null; ProfilePicker.ItemsSource = profiles.Profiles;
+            ProfilePicker.SelectedItem = profiles.Profiles.FirstOrDefault(p => p.Id == id) ?? profiles.Profiles.FirstOrDefault();
         }
-        catch (InvalidOperationException ex) { PendingVisitNotice.Text = ex.Message; }
+        finally { updatingPendingVisits = false; }
+        ProfilesGrid.ItemsSource = null; ProfilesGrid.ItemsSource = profiles.Profiles;
+        RefreshPendingVisits(preferProfile: true);
     }
-    // Lista compacta de pavimentos com etapa e chamado da execução em foco (ativa, concluída ou pendente).
+    private void RefreshPendingVisits(string? selectedId = null, bool preferProfile = false)
+    {
+        var id = selectedId ?? (preferProfile ? null : SelectedPendingRun?.Id);
+        var choices = VisitRunSelection.Pending(runs)
+            .Select(run => new PendingVisitChoice(run, profiles.Profiles.All(p => p.Id != run.Profile.Id))).ToList();
+        var selected = choices.FirstOrDefault(choice => choice.Run.Id == id);
+        if (selected is null && ActiveProfile is not null)
+        {
+            try
+            {
+                var preferred = VisitRunSelection.PendingForProfile(runs, ActiveProfile.Id);
+                selected = choices.FirstOrDefault(choice => choice.Run == preferred);
+            }
+            catch (InvalidOperationException) { /* A escolha explícita fica na tela principal. */ }
+        }
+        updatingPendingVisits = true;
+        try { PendingVisitPicker.ItemsSource = choices; PendingVisitPicker.SelectedItem = selected; }
+        finally { updatingPendingVisits = false; }
+        PendingVisitPanel.Visibility = choices.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ShowExecutionProfile();
+    }
+    private void PendingVisitChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (updatingPendingVisits) return;
+        if (SelectedPendingRun is { } run)
+        {
+            updatingPendingVisits = true;
+            try { ProfilePicker.SelectedItem = profiles.Profiles.FirstOrDefault(p => p.Id == run.Profile.Id); }
+            finally { updatingPendingVisits = false; }
+        }
+        ShowExecutionProfile();
+        if (SelectedPendingRun is { } selected) ShowProgress(selected);
+    }
+    private void ShowExecutionProfile()
+    {
+        var run = SelectedPendingRun;
+        var profile = run?.Profile ?? ActiveProfile;
+        var floors = run?.Floors.Select(f => f.Floor).ToList() ?? profile?.Floors;
+        FloorGrid.ItemsSource = floors;
+        FloorGrid.SelectedIndex = floors?.Count > 0 ? 0 : -1;
+        ShowRunFloors(run);
+        VisitColumn.Visibility = run is null ? Visibility.Visible : Visibility.Collapsed;
+        var profileHasPending = ActiveProfile is not null && runs.Any(r => r.Profile.Id == ActiveProfile.Id && r.State != RunState.Completed);
+        ExecuteButton.Content = run is not null || profileHasPending ? "Retomar visita preventiva" : "Executar visita preventiva";
+        UpdateExecutionControls();
+        PendingVisitNotice.Visibility = PendingVisitPanel.Visibility;
+        if (run is not null)
+        {
+            var count = run.Floors.Count(f => f.IssueKey is not null);
+            PendingVisitNotice.Text = $"Visita pendente de {run.DateLabel}: {count} chamados registrados. A retomada usará os dados originais e o progresso desta visita.";
+        }
+        else PendingVisitNotice.Text = profileHasPending
+            ? "Selecione a visita pendente que deseja retomar. Nenhum chamado será aberto antes dessa escolha."
+            : "Para retomar, escolha uma visita pendente acima. Para uma nova visita, use o perfil selecionado.";
+        UpdateSelectionSummary();
+    }
     private void ShowRunFloors(VisitRun? run)
     {
-        RunFloorList.ItemsSource = null; RunFloorList.ItemsSource = run?.Floors; // reatribui para redesenhar as etapas
+        RunFloorList.ItemsSource = null; RunFloorList.ItemsSource = run?.Floors;
         RunFloorsScroll.Visibility = run is { Floors.Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
         RunProgress.Value = run is null || run.Floors.Count == 0 ? 0 : run.Floors.Sum(f => (int)f.Stage) * 100d / (run.Floors.Count * 4);
     }
-    private void UpdateSelectionSummary() => SelectionSummary.Text = $"Pavimentos selecionados: {ActiveProfile?.Floors.Count(f => f.Selected) ?? 0}";
+    private void UpdateExecutionControls()
+    {
+        var profileHasPending = ActiveProfile is not null && runs.Any(r => r.Profile.Id == ActiveProfile.Id && r.State != RunState.Completed);
+        ExecuteButton.IsEnabled = !busy && !cleaningHistory && (SelectedPendingRun is not null || (ActiveProfile is not null && !profileHasPending));
+    }
+    private void UpdateSelectionSummary() => SelectionSummary.Text = SelectedPendingRun is { } run
+        ? $"Pavimentos da visita: {run.Floors.Count}"
+        : $"Pavimentos selecionados: {ActiveProfile?.Floors.Count(f => f.Selected) ?? 0}";
     private async void ProfileChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ActiveProfile is null) return;
+        if (updatingPendingVisits || ActiveProfile is null) return;
         profiles.ActiveProfileId = ActiveProfile.Id;
-        ShowProfile();
+        RefreshPendingVisits(preferProfile: true);
+        if (SelectedPendingRun is { } run) ShowProgress(run);
+        else RunProgress.Value = 0;
         if (!loading && !preview) await SafeAsync(() => store.SaveProfilesAsync(profiles));
     }
-    private void FloorSelected(object sender, SelectionChangedEventArgs e) => ResolutionPreview.Text = (FloorGrid.SelectedItem as Floor)?.Resolution ?? "Selecione um pavimento para conferir seu texto.";
     private void SelectionChanged(object sender, RoutedEventArgs e) { if (SelectionSummary is not null) UpdateSelectionSummary(); }
     private void RailItemLoaded(object sender, RoutedEventArgs e)
     {
@@ -213,27 +263,18 @@ public partial class MainWindow : Window
         profiles.ActiveProfileId = profile.Id;
         await store.SaveProfilesAsync(profiles);
         RefreshProfiles(profile.Id);
-        ExecutionMessage.Text = "Perfil salvo. Confira os pavimentos antes de executar.";
     }
     private async Task EditAsync(VisitProfile? profile, bool isNew = false)
     {
-        if (busy || profile is null) return;
+        if (busy || cleaningHistory || profile is null) return;
         var dialog = new ProfileWindow(profile) { Owner = this };
         if (dialog.ShowDialog() == true) await SaveProfileAsync(dialog.Profile, isNew);
     }
     private async void NewProfile(object sender, RoutedEventArgs e) => await SafeAsync(() => EditAsync(NewTemplate(), true));
-    private async void EditActive(object sender, RoutedEventArgs e) => await SafeAsync(() => EditAsync(ActiveProfile));
     private async void EditProfile(object sender, RoutedEventArgs e) => await SafeAsync(() => EditAsync(ProfilesGrid.SelectedItem as VisitProfile));
-    private async void DuplicateProfile(object sender, RoutedEventArgs e)
-    {
-        if (ProfilesGrid.SelectedItem is not VisitProfile source || busy) return;
-        var copy = Serialization.Copy(source); copy.Id = Guid.NewGuid().ToString("N"); copy.Name += " (cópia)";
-        foreach (var floor in copy.Floors) floor.Id = Guid.NewGuid().ToString("N");
-        await SafeAsync(() => EditAsync(copy, true));
-    }
     private async void DeleteProfile(object sender, RoutedEventArgs e)
     {
-        if (ProfilesGrid.SelectedItem is not VisitProfile profile || busy) return;
+        if (ProfilesGrid.SelectedItem is not VisitProfile profile || busy || cleaningHistory) return;
         if (MessageBox.Show(this, $"Excluir o perfil “{profile.Name}”? O histórico das visitas será mantido.", "Vistora", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         await SafeAsync(async () => { profiles.Profiles.Remove(profile); profiles.ActiveProfileId = profiles.Profiles.FirstOrDefault()?.Id; await store.SaveProfilesAsync(profiles); RefreshProfiles(); });
     }
@@ -241,55 +282,87 @@ public partial class MainWindow : Window
     private void SetBusy(bool value)
     {
         busy = value;
-        foreach (var control in BusyLocked) control.IsEnabled = !value;
-        StopButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-        StopButton.IsEnabled = value;
+        UpdateInteraction();
+    }
+    private void UpdateInteraction()
+    {
+        foreach (var control in BusyLocked) control.IsEnabled = !busy && !cleaningHistory;
+        StopButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        UpdateExecutionControls();
+        StopButton.IsEnabled = busy;
+        ClearHistoryButton.IsEnabled = !loading && !busy && !cleaningHistory && !exportingLog && !preview;
+        ExportLogButton.IsEnabled = !cleaningHistory && !exportingLog;
     }
     private async void Execute(object sender, RoutedEventArgs e)
     {
-        if (busy || ActiveProfile is null) return;
+        if (busy || cleaningHistory || loading) return;
         await SafeAsync(async () =>
         {
             if (preview) throw new InvalidOperationException("A prévia é somente para conferir a tela.");
-            var pending = VisitRunSelection.PendingForProfile(runs, ActiveProfile.Id);
-            if (pending is not null)
-            {
-                RefreshHistory(pending.Id);
-                await RunAsync(pending);
-                return;
-            }
-            var errors = ProfileValidation.Validate(ActiveProfile, settings);
-            if (errors.Count > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
-            await store.SaveProfilesAsync(profiles);
-            var run = ProfileValidation.CreateRun(ActiveProfile, settings);
-            await store.SaveRunAsync(run);
-            runs.Insert(0, run); RefreshHistory();
-            await RunAsync(run);
+            SetBusy(true); cancellation = new CancellationTokenSource();
+            try { activeTask = ExecuteVisitAsync(); await activeTask; }
+            finally { activeTask = null; cancellation.Dispose(); cancellation = null; SetBusy(false); }
         });
     }
-    private async Task RunAsync(VisitRun run)
+    private async Task ExecuteVisitAsync()
     {
-        SetBusy(true); cancellation = new CancellationTokenSource();
-        try { activeTask = engine.ExecuteAsync(run, cancellation.Token); await activeTask; ShowProgress(run); }
-        finally { activeTask = null; cancellation.Dispose(); cancellation = null; SetBusy(false); RefreshHistory(run.Id); UpdateResumeNotice(); }
+        var pending = SelectedPendingRun is { } selected ? VisitRunSelection.ForResume(runs, selected)
+            : ActiveProfile is not null ? VisitRunSelection.PendingForProfile(runs, ActiveProfile.Id) : null;
+        if (pending is not null)
+        {
+            RefreshHistory(pending.Id);
+            RefreshPendingVisits(pending.Id);
+            await RunAsync(pending, resume: true);
+            return;
+        }
+        if (ActiveProfile is null) throw new InvalidOperationException("Escolha um perfil ou uma visita pendente para continuar.");
+        var errors = ProfileValidation.Validate(ActiveProfile, settings);
+        if (errors.Count > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
+        await store.SaveProfilesAsync(profiles);
+        var run = ProfileValidation.CreateRun(ActiveProfile, settings);
+        await store.SaveRunAsync(run);
+        runs.Insert(0, run); RefreshHistory();
+        cancellation!.Token.ThrowIfCancellationRequested();
+        await RunAsync(run);
+    }
+    private async Task RunAsync(VisitRun run, bool resume = false)
+    {
+        try
+        {
+            if (resume)
+            {
+                var token = cancellation!.Token;
+                var task = engine.ResumeAsync(run, floor => Dispatcher.InvokeAsync(() => token.IsCancellationRequested ? null : AskForIssueKey(floor.Name)).Task, token,
+                    (floor, snapshot) => Dispatcher.InvokeAsync(() => !token.IsCancellationRequested && MessageBox.Show(this,
+                        $"O fechamento anterior de {floor.Name} ({floor.IssueKey}) ficou sem confirmação. No Jira, o chamado está em “{snapshot.Status}”.\n\n" +
+                        "Confira na janela do Edge a resolução e os comentários deste chamado antes de continuar. Se o texto já foi enviado, escolha Não e conclua o fechamento no Jira para evitar duplicação.\n\n" +
+                        "Você conferiu que a resolução e o comentário público não foram enviados e deseja tentar o fechamento novamente?",
+                        "Conferir fechamento pendente", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes).Task);
+                if (await task) ShowProgress(run);
+            }
+            else { await engine.ExecuteAsync(run, cancellation!.Token); ShowProgress(run); }
+        }
+        finally
+        {
+            RefreshHistory(run.Id);
+            RefreshPendingVisits(run.State == RunState.Completed ? null : run.Id);
+            if (run.State == RunState.Completed) ShowRunFloors(run);
+        }
     }
     private void Stop(object sender, RoutedEventArgs e)
     {
         cancellation?.Cancel(); StopButton.IsEnabled = false;
-        ExecutionMessage.Text = "Parando após registrar o resultado da operação atual…";
     }
     private void ShowProgress(VisitRun run)
     {
-        ClosingTeamSummary.Text = $"Equipe de fechamento: {run.Settings.ClosingTeam}";
-        ExecutionMessage.Text = run.Message;
         ShowRunFloors(run);
         HistoryGrid.Items.Refresh();
         if (HistoryGrid.SelectedItem is VisitRun selected && selected.Id == run.Id)
-        { HistoryMessage.Text = run.Message; RunFloorGrid.Items.Refresh(); }
+            RunFloorGrid.Items.Refresh();
     }
     private async void CheckAccess(object sender, RoutedEventArgs e)
     {
-        if (busy || preview) return;
+        if (busy || cleaningHistory || loading || preview) return;
         await SafeAsync(async () =>
         {
             SetBusy(true); cancellation = new CancellationTokenSource();
@@ -305,8 +378,7 @@ public partial class MainWindow : Window
     {
         diagnostics.AppEvent("access.started", "Verificação de acesso iniciada.");
         await using var browser = new EdgeJiraAutomation(store);
-        await browser.ConnectAsync(settings, message => Dispatcher.Invoke(() => ExecutionMessage.Text = message), token);
-        ExecutionMessage.Text = "Acesso ao formulário confirmado. A sessão do Edge foi salva.";
+        await browser.ConnectAsync(settings, message => diagnostics.AppEvent("access.progress", message), token);
         diagnostics.AppEvent("access.confirmed", "Acesso ao formulário confirmado.");
     }
     private void RefreshHistory(string? selectedId = null)
@@ -317,67 +389,66 @@ public partial class MainWindow : Window
             ?? runs.FirstOrDefault(r => r.Profile.Id == ActiveProfile?.Id && r.State != RunState.Completed && r.Floors.Any(f => f.IssueKey is not null))
             ?? runs.FirstOrDefault();
     }
-    private async void HistorySelected(object sender, SelectionChangedEventArgs e)
+    private void HistorySelected(object sender, SelectionChangedEventArgs e)
     {
         var run = HistoryGrid.SelectedItem as VisitRun;
         RunFloorGrid.ItemsSource = run?.Floors; RunFloorGrid.SelectedIndex = run is null ? -1 : 0;
-        HistoryMessage.Text = run?.Message ?? "Selecione uma execução para ver os chamados.";
-        DiagnosticSummary.Text = "";
-        if (run is not null)
-            try
-            {
-                var overview = await diagnostics.ReadOverviewAsync(run.Id);
-                if (HistoryGrid.SelectedItem == run) DiagnosticSummary.Text = overview ?? "Diagnóstico detalhado indisponível para esta visita.";
-            }
-            catch { DiagnosticSummary.Text = "Diagnóstico indisponível."; }
     }
-    private async void Resume(object sender, RoutedEventArgs e)
+    private string? AskForIssueKey(string floorName)
     {
-        if (busy || HistoryGrid.SelectedItem is not VisitRun run) return;
-        await SafeAsync(async () =>
-        {
-            var pending = VisitRunSelection.ForResume(runs, run);
-            RefreshHistory(pending.Id);
-            await RunAsync(pending);
-        });
-    }
-    private async void LinkIssue(object sender, RoutedEventArgs e)
-    {
-        if (busy || HistoryGrid.SelectedItem is not VisitRun run || RunFloorGrid.SelectedItem is not FloorRun floor) return;
-        if (floor.IssueKey is not null || floor.PendingAction != PendingAction.Create)
-        { MessageBox.Show(this, "Selecione um pavimento cuja abertura foi enviada e cujo número ainda não foi identificado.", "Vistora"); return; }
-        var dialog = new IssueKeyWindow(floor.Name) { Owner = this };
-        if (dialog.ShowDialog() != true) return;
-        var key = dialog.IssueKey;
-        await SafeAsync(async () =>
-        {
-            SetBusy(true); cancellation = new CancellationTokenSource();
-            try { activeTask = engine.AttachIssueAsync(run, floor, key, cancellation.Token); await activeTask; }
-            finally { activeTask = null; cancellation.Dispose(); cancellation = null; SetBusy(false); RefreshHistory(run.Id); }
-        });
-    }
-    private void OpenIssue(object sender, RoutedEventArgs e)
-    {
-        if (HistoryGrid.SelectedItem is VisitRun run && RunFloorGrid.SelectedItem is FloorRun { IssueKey: { } key })
-            OpenPath($"{run.Settings.JiraUrl.TrimEnd('/')}/jira/servicedesk/projects/{key.Split('-')[0]}/queues/issue/{key}");
-    }
-    private void OpenDiagnostics(object sender, RoutedEventArgs e)
-    {
-        if (HistoryGrid.SelectedItem is not VisitRun run) return;
-        var path = store.DiagnosticsDirectory(run.Id);
-        if (Directory.Exists(path)) OpenPath(path); else MessageBox.Show(this, "Esta execução não tem diagnóstico registrado.", "Vistora");
+        var dialog = new IssueKeyWindow(floorName) { Owner = this };
+        return dialog.ShowDialog() == true ? dialog.IssueKey : null;
     }
     private async void ExportLog(object sender, RoutedEventArgs e)
-    { if (HistoryGrid.SelectedItem is VisitRun run) await DiagnosticExportUi.ExportAsync(this, diagnostics, run); }
-    private async void ExportAppLog(object sender, RoutedEventArgs e) => await DiagnosticExportUi.ExportAsync(this, diagnostics);
+    {
+        if (cleaningHistory || exportingLog) return;
+        exportingLog = true; UpdateInteraction();
+        try { await DiagnosticExportUi.ExportAsync(this, diagnostics, HistoryGrid.SelectedItem as VisitRun); }
+        finally { exportingLog = false; UpdateInteraction(); }
+    }
+    private async void ClearHistory(object sender, RoutedEventArgs e) => await SafeAsync(() => ClearHistoryWithConfirmationAsync(message =>
+        new HistoryClearWindow(message) { Owner = this }.ShowDialog() == true));
+
+    private async Task ClearHistoryWithConfirmationAsync(Func<string, bool> confirm)
+    {
+        if (loading || busy || cleaningHistory || exportingLog || preview) return;
+        var pending = VisitRunSelection.Pending(runs).Count;
+        var message = $"Apagar todo o histórico deste computador?\n\n{runs.Count} visita(s), incluindo {pending} pendente(s), serão removidas de todas as unidades. Os logs e capturas das visitas também serão apagados.\n\nAs visitas pendentes não poderão mais ser retomadas pelo Vistora. Os chamados no Jira, perfis, configurações e login do Edge serão preservados.\n\nEsta ação não pode ser desfeita.";
+        if (!confirm(message)) return;
+        cleaningHistory = true; UpdateInteraction();
+        HistoryStatus.Text = "Limpando histórico e pendências…";
+        HistoryStatus.Foreground = (Brush)FindResource("Muted");
+        Exception? failure = null;
+        try { activeTask = store.ClearHistoryAsync(); await activeTask; }
+        catch (Exception ex)
+        {
+            failure = ex;
+            diagnostics.AppEvent("history.clear_failed", "A limpeza do histórico não pôde ser concluída.", DiagnosticLevel.Error, ex);
+        }
+        finally
+        {
+            try { runs = await store.LoadRunsAsync(); }
+            catch (Exception ex)
+            {
+                failure ??= ex;
+                runs.RemoveAll(run => !File.Exists(Path.Combine(store.Root, "runs", run.Id + ".json")));
+            }
+            RefreshProfiles(profiles.ActiveProfileId); RefreshHistory();
+            activeTask = null; cleaningHistory = false; UpdateInteraction();
+        }
+        HistoryStatus.Foreground = (Brush)FindResource(failure is null ? "Teal" : "Red");
+        HistoryStatus.Text = failure is null
+            ? "Histórico, pendências, logs e capturas das visitas removidos."
+            : "A limpeza ficou incompleta. Os registros restantes foram mantidos. Tente novamente. " + failure.Message;
+        if (failure is null) diagnostics.AppEvent("history.cleared", "Histórico e diagnósticos das visitas removidos.");
+    }
     private async void SaveSettings(object sender, RoutedEventArgs e)
     {
-        if (busy) return;
+        if (busy || cleaningHistory) return;
         var copy = Serialization.Copy(settings);
         copy.JiraUrl = JiraUrlBox.Text.Trim().TrimEnd('/'); copy.PortalUrl = PortalUrlBox.Text.Trim(); copy.QueueUrl = QueueUrlBox.Text.Trim();
-        if (!int.TryParse(TimeoutBox.Text, out var timeout)) { ShowSettingsStatus("Informe o tempo de espera em segundos.", true); return; }
-        copy.TimeoutSeconds = timeout;
-        copy.Diagnostics.MinimumLevel = DetailedLogsBox.IsChecked == true ? DiagnosticLevel.Debug : DiagnosticLevel.Information;
+        copy.Diagnostics ??= new DiagnosticOptions();
+        copy.Diagnostics.MinimumLevel = DiagnosticLevel.Debug;
         var errors = ProfileValidation.ValidateSettings(copy);
         if (errors.Count > 0) { ShowSettingsStatus(string.Join(Environment.NewLine, errors), true); return; }
         await SafeAsync(async () =>
@@ -393,12 +464,10 @@ public partial class MainWindow : Window
         SettingsStatus.Foreground = (Brush)FindResource(error ? "Red" : "Teal");
     }
     private void SettingsEdited(object sender, TextChangedEventArgs e) => SettingsStatus.Text = "";
-    private void OpenData(object sender, RoutedEventArgs e) => OpenPath(store.Root);
-    private static void OpenPath(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     private async Task SafeAsync(Func<Task> operation)
     {
         try { await operation(); }
-        catch (OperationCanceledException) { ExecutionMessage.Text = "Operação interrompida."; }
+        catch (OperationCanceledException) { diagnostics.AppEvent("ui.operation_cancelled", "Operação interrompida."); }
         catch (Exception exception)
         {
             diagnostics.AppEvent("ui.operation_failed", "Uma operação da interface falhou.", DiagnosticLevel.Error, exception);
@@ -407,9 +476,9 @@ public partial class MainWindow : Window
     }
     private async void WindowClosing(object? sender, CancelEventArgs e)
     {
-        if (!busy || closing) return;
+        if ((!busy && !cleaningHistory) || closing) return;
         e.Cancel = true; closing = true;
-        cancellation?.Cancel(); ExecutionMessage.Text = "Registrando o progresso antes de fechar…";
+        cancellation?.Cancel();
         try { if (activeTask is not null) await activeTask; }
         catch (Exception ex) { diagnostics.AppEvent("app.shutdown_failed", "Falha ao aguardar a execução no encerramento.", DiagnosticLevel.Error, ex); }
         await diagnostics.FlushAsync();

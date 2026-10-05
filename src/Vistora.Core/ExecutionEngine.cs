@@ -26,6 +26,23 @@ public sealed class ExecutionEngine(IRunStore store, Func<IJiraAutomation> autom
     private bool statePersisted;
     public event Action<VisitRun>? Progress;
 
+    public async Task<bool> ResumeAsync(VisitRun run, Func<FloorRun, Task<string?>> requestIssueKey, CancellationToken cancellationToken,
+        Func<FloorRun, IssueSnapshot, Task<bool>>? confirmCloseRetry = null)
+    {
+        if (run.State == RunState.Completed) throw new InvalidOperationException("Esta execução já foi concluída.");
+        foreach (var floor in run.Floors.Where(f => f.IssueKey is null && f.PendingAction == PendingAction.Create))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var key = await requestIssueKey(floor);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (key is null) return false;
+            await AttachIssueAsync(run, floor, key.Trim().ToUpperInvariant(), cancellationToken);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        await ExecuteAsync(run, cancellationToken, confirmCloseRetry);
+        return true;
+    }
+
     private async Task SaveAsync(VisitRun run, string? message = null)
     {
         run.UpdatedAt = DateTimeOffset.Now;
@@ -41,7 +58,8 @@ public sealed class ExecutionEngine(IRunStore store, Func<IJiraAutomation> autom
         Progress?.Invoke(run);
     }
 
-    public async Task ExecuteAsync(VisitRun run, CancellationToken cancellationToken)
+    public async Task ExecuteAsync(VisitRun run, CancellationToken cancellationToken,
+        Func<FloorRun, IssueSnapshot, Task<bool>>? confirmCloseRetry = null)
     {
         if (run.State == RunState.Completed) throw new InvalidOperationException("Esta execução já foi concluída.");
         if (!await gate.WaitAsync(0, cancellationToken))
@@ -56,10 +74,10 @@ public sealed class ExecutionEngine(IRunStore store, Func<IJiraAutomation> autom
         {
             current = new DiagnosticAttempt(diagnostics, run);
             run.State = RunState.Running;
-            await SaveAsync(run, "Abrindo o Microsoft Edge");
+            await SaveAsync(run, "Abrindo o navegador");
             var uncertain = run.Floors.FirstOrDefault(f => f.IssueKey is null && (f.PendingAction == PendingAction.Create || f.Stage != FloorStage.Pending));
             if (uncertain is not null)
-                throw new ReconciliationException($"A criação de {uncertain.Name} precisa de conferência. Vincule o número do chamado no histórico antes de retomar; nenhuma nova abertura foi enviada.");
+                throw new ReconciliationException($"A criação de {uncertain.Name} precisa de conferência. Retome pela aba Executar visita para conferir o número do chamado; nenhuma nova abertura foi enviada.");
             var initialIssueKey = run.Floors.All(f => f.IssueKey is not null)
                 ? (run.Floors.FirstOrDefault(f => f.Stage != FloorStage.Closed) ?? run.Floors.First()).IssueKey : null;
             browser = await current.StepAsync("browser.create", null, () => Task.FromResult(automationFactory()));
@@ -75,7 +93,7 @@ public sealed class ExecutionEngine(IRunStore store, Func<IJiraAutomation> autom
                 cancellationToken.ThrowIfCancellationRequested();
                 if (floor.IssueKey is not null) { current.Skip(floor, "issue_already_registered"); continue; }
                 if (floor.PendingAction == PendingAction.Create)
-                    throw new ReconciliationException($"A criação de {floor.Name} pode ter sido enviada. Vincule o número do chamado no histórico antes de retomar.");
+                    throw new ReconciliationException($"A criação de {floor.Name} pode ter sido enviada. Retome pela aba Executar visita para conferir o número do chamado.");
                 await SaveAsync(run, $"Preenchendo o chamado de {floor.Name}");
                 await current.StepAsync("create.prepare", floor, () => browser.PrepareCreateAsync(run, floor, cancellationToken));
                 cancellationToken.ThrowIfCancellationRequested();
@@ -109,7 +127,16 @@ public sealed class ExecutionEngine(IRunStore store, Func<IJiraAutomation> autom
                     continue;
                 }
                 if (floor.Stage == FloorStage.Closed || floor.PendingAction == PendingAction.Close)
-                    throw new ReconciliationException($"Confira {floor.IssueKey}: houve uma tentativa de fechamento com resultado incerto. O chamado ainda não está fechado; nenhuma nova mensagem foi enviada.");
+                {
+                    // Uma pendência antiga só pode ser liberada após conferência explícita no Jira.
+                    if (floor.Stage == FloorStage.Closed || !snapshot.Started || !snapshot.AssignedToCurrentUser ||
+                        confirmCloseRetry is null || !await confirmCloseRetry(floor, snapshot))
+                        throw new ReconciliationException($"Confira {floor.IssueKey}: houve uma tentativa de fechamento com resultado incerto. O chamado ainda não está fechado; nenhuma nova mensagem foi enviada.");
+                    cancellationToken.ThrowIfCancellationRequested();
+                    floor.PendingAction = PendingAction.None;
+                    await SaveAsync(run, $"Novo fechamento de {floor.IssueKey} autorizado após conferência no Jira.");
+                    current.Confirm(floor, "close.retry_authorized");
+                }
                 if (!snapshot.AssignedToCurrentUser)
                     await PerformAsync(run, floor, PendingAction.Assign, $"Atribuindo {floor.Name}", () => browser.AssignAsync(run, floor));
                 else current.Skip(floor, "assignment_verified");

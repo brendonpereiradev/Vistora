@@ -46,10 +46,8 @@ public partial class App : Application
             diagnostics.AppEvent("app.startup_failed", "Não foi possível iniciar o aplicativo.", DiagnosticLevel.Error, ex, code: "STARTUP_FAILED");
             var emergency = new Window { Title = "Vistora — diagnóstico", Width = 540, Height = 260, WindowStartupLocation = WindowStartupLocation.CenterScreen };
             var panel = new StackPanel { Margin = new Thickness(24) };
-            panel.Children.Add(new TextBlock { Text = "Não foi possível iniciar o Vistora. Você pode exportar os registros para análise. Os dados locais foram preservados.", TextWrapping = TextWrapping.Wrap });
-            var export = new Button { Content = "Exportar log do aplicativo", Margin = new Thickness(0, 18, 0, 0) };
-            export.Click += async (_, _) => await DiagnosticExportUi.ExportAsync(emergency, diagnostics);
-            panel.Children.Add(export); emergency.Content = panel; MainWindow = emergency; emergency.Show(); return;
+            panel.Children.Add(new TextBlock { Text = "Não foi possível iniciar o Vistora. Os dados locais foram preservados. Os registros disponíveis ficam na pasta de logs do aplicativo.", TextWrapping = TextWrapping.Wrap });
+            emergency.Content = panel; MainWindow = emergency; emergency.Show(); return;
         }
         MainWindow = window;
         window.Show();

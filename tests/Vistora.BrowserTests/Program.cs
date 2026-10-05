@@ -125,6 +125,14 @@ var loginMode = false;
 var incompleteForm = false;
 var passwordForm = false;
 var portalVisits = 0;
+var rejectClosing = false;
+var closeRequests = 0;
+app.MapPost("/fixture/close", async (HttpContext ctx) =>
+{
+    closeRequests++;
+    await Task.Delay(1500, ctx.RequestAborted);
+    return rejectClosing ? Results.BadRequest() : Results.Ok();
+});
 app.MapGet("/{**path}", (HttpContext ctx) =>
 {
     if (ctx.Request.Path.Value!.EndsWith("/create/1", StringComparison.Ordinal)) portalVisits++;
@@ -172,6 +180,7 @@ try
     run = (await store.LoadRunsAsync()).Single();
     await engine.ExecuteAsync(run, default);
     Check(run.State == RunState.Completed, run.Message);
+    Check(closeRequests == 2, "O fechamento foi reenviado durante a espera.");
     Check(run.Floors.Select(f => f.IssueKey).SequenceEqual(createdKeys), "A retomada substituiu os chamados existentes.");
     Check(portalVisits == portalVisitsBeforeResume, "A retomada abriu o formulário de criação.");
     await diagnostics.FlushAsync();
@@ -183,6 +192,7 @@ try
     Console.WriteLine("PASS: retomada após criação atribui, inicia e fecha os mesmos chamados.");
     Check(run.Floors.Select(f => f.IssueKey).Distinct().Count() == 2, "Chamados não são distintos.");
     Console.WriteLine("PASS: fluxo completo com rótulos (required) ocultos e comboboxes cobertos pelo valor selecionado.");
+    Console.WriteLine("PASS: status antecipado e modal aberto/fechado aguardam a gravação lenta sem perder ou repetir o fechamento.");
     await using (var automation = new EdgeJiraAutomation(store))
     {
         await automation.ConnectAsync(run.Settings, _ => { }, default);
@@ -206,6 +216,29 @@ try
         Check(!changed.ResolutionMatches && changed.PublicCommentMatches, "Um valor anterior da resolução foi aceito como o valor atual.");
         Console.WriteLine("PASS: a atualização mais recente da resolução prevalece sobre o texto correto de uma atualização antiga.");
     }
+
+    rejectClosing = true;
+    var rejectedProfile = Serialization.Copy(profile); rejectedProfile.Floors = [rejectedProfile.Floors[0]];
+    var rejectedRun = ProfileValidation.CreateRun(rejectedProfile, new AppSettings());
+    rejectedRun.Settings = Serialization.Copy(run.Settings); rejectedRun.Settings.TimeoutSeconds = 2;
+    await engine.ExecuteAsync(rejectedRun, default);
+    var rejectedKey = rejectedRun.Floors[0].IssueKey;
+    Check(rejectedRun.State == RunState.NeedsReconciliation && rejectedRun.Floors[0].PendingAction == PendingAction.Close, "Envio rejeitado foi aceito ou perdeu a pendência.");
+    using (var summary = JsonDocument.Parse(await File.ReadAllTextAsync(Directory.EnumerateFiles(store.DiagnosticsDirectory(rejectedRun.Id), "summary.json", SearchOption.AllDirectories).Single())))
+        Check(summary.RootElement.GetProperty("errorCode").GetString() == "CLOSE_SUBMISSION_UNCONFIRMED", "Envio não confirmado perdeu a causa técnica.");
+    var requestsBeforeRetry = closeRequests;
+    await engine.ResumeAsync(rejectedRun, _ => throw new Exception("Solicitou nova abertura."), default);
+    Check(closeRequests == requestsBeforeRetry && rejectedRun.State == RunState.NeedsReconciliation, "Retomada reenviou comentário sem conferência.");
+    rejectClosing = false;
+    rejectedRun.Settings.TimeoutSeconds = 10;
+    var retryConfirmations = 0;
+    await engine.ResumeAsync(rejectedRun, _ => throw new Exception("Solicitou nova abertura."), default, (floor, snapshot) =>
+    {
+        Check(floor.IssueKey == rejectedKey && snapshot.Started && snapshot.AssignedToCurrentUser, "Conferência não corresponde ao chamado pendente.");
+        retryConfirmations++; return Task.FromResult(true);
+    });
+    Check(rejectedRun.State == RunState.Completed && rejectedRun.Floors[0].IssueKey == rejectedKey && retryConfirmations == 1 && closeRequests == requestsBeforeRetry + 1, rejectedRun.Message);
+    Console.WriteLine("PASS: envio rejeitado preserva a pendência e a conferência explícita retoma o mesmo chamado.");
 
     loginMode = true;
     var loginProbe = ProfileValidation.CreateRun(profile, new AppSettings()); loginProbe.Settings = Serialization.Copy(run.Settings);
@@ -365,7 +398,10 @@ static class Fixture
           const dialog=document.createElement('dialog');dialog.setAttribute('role','dialog');dialog.innerHTML=`<h2>Transitar para Fechado</h2><label for="resolution">Resolução do chamado</label><textarea id="resolution"></textarea><button id="reply" type="button">Reply to customer</button><label for="public">Comentário público</label><textarea id="public"></textarea><label for="team">Equipe</label><select id="team"><option>Selecione</option><option>Field Services</option></select><button id="confirm">Transitar para Fechado</button>`;document.body.appendChild(dialog);dialog.showModal();
           document.getElementById('reply').onclick=()=>dialog.dataset.public='true';
           for(const id of ['resolution','public'])delayedValidation(id);
-          document.getElementById('confirm').onclick=()=>{for(const id of ['resolution','public']){const input=document.getElementById(id);if(input.dataset.committed!==input.value)throw Error('Jira ainda não processou '+id)}if(dialog.dataset.public!=='true')throw Error('Comentário não é público');issue.resolution=document.getElementById('resolution').value;issue.comment=document.getElementById('public').value;issue.team=document.getElementById('team').value;issue.commentCount++;issue.status='Fechado';persist();location.reload()}
+          document.getElementById('confirm').onclick=async()=>{for(const id of ['resolution','public']){const input=document.getElementById(id);if(input.dataset.committed!==input.value)throw Error('Jira ainda não processou '+id)}if(dialog.dataset.public!=='true')throw Error('Comentário não é público');const resolution=document.getElementById('resolution').value,comment=document.getElementById('public').value,team=document.getElementById('team').value;
+          // O status muda antes da resposta do servidor. Navegar agora perde o fechamento.
+          document.getElementById('status').textContent='Fechado';if(issueKey.endsWith('1'))dialog.close();
+          const response=await fetch('/fixture/close',{method:'POST'});if(!response.ok){document.getElementById('status').textContent=issue.status;if(!dialog.open)dialog.showModal();return}issue.resolution=resolution;issue.comment=comment;issue.team=team;issue.commentCount++;issue.status='Fechado';persist();location.reload()}
         }};
       }
       }

@@ -26,6 +26,28 @@ public sealed class LocalStore : IRunStore
     public Task SaveSettingsAsync(AppSettings value) => WriteAsync("settings.json", value);
     public Task SaveRunAsync(VisitRun run) { Diagnostics?.Register(run); return WriteAsync(Path.Combine("runs", SafeId(run.Id) + ".json"), run); }
 
+    public async Task ClearHistoryAsync()
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var directory = Path.Combine(Root, "runs");
+            VisitDataPaths.Check(Root, directory);
+            var paths = Directory.EnumerateFiles(directory).Where(path =>
+            {
+                var name = Path.GetFileName(path);
+                var dot = name.IndexOf('.');
+                return dot > 0 && Guid.TryParseExact(name[..dot], "N", out _) &&
+                    name[dot..] is ".json" or ".json.bak" or ".json.tmp";
+            }).OrderBy(path => path.EndsWith(".json", StringComparison.Ordinal) ? 1 : 0)
+                .ThenBy(path => path, StringComparer.Ordinal).ToArray();
+            foreach (var path in paths) VisitDataPaths.Check(Root, path);
+            if (Diagnostics is not null) await Diagnostics.ClearVisitsAsync();
+            foreach (var path in paths) File.Delete(path);
+        }
+        finally { gate.Release(); }
+    }
+
     private async Task<T> ReadAsync<T>(string relative, Func<T> create)
     {
         var path = Path.Combine(Root, relative);

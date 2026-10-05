@@ -10,6 +10,7 @@ internal static class DiagnosticTests
     public static (string Name, Func<Task> Test)[] Cases =>
     [
         ("Logs preservam etapas, correlação, resultado e tempos", Complete),
+        ("Detalhes ficam ativos desde a inicialização e com configurações antigas", AlwaysDetailed),
         ("Logs de retomada preservam tentativas sem duplicar ações", Resume),
         ("Cancelamento não gera falsa falha técnica", Cancel),
         ("Falhas da fábrica e limpeza liberam a execução e preservam a causa", Lifecycle),
@@ -53,6 +54,32 @@ internal static class DiagnosticTests
         return files;
     }
     private static JsonDocument Json(Dictionary<string, byte[]> files, string path) => JsonDocument.Parse(files[path]);
+    private static async Task AlwaysDetailed()
+    {
+        await using var diagnostics = new DiagnosticService(DirectoryPath());
+        diagnostics.AppEvent("details.startup", "Detalhes da inicialização.", DiagnosticLevel.Debug);
+        var levels = new[] { DiagnosticLevel.Information, DiagnosticLevel.Warning, DiagnosticLevel.Error, (DiagnosticLevel)999 };
+        for (var i = 0; i < levels.Length; i++)
+        {
+            diagnostics.Configure(new DiagnosticOptions { MinimumLevel = levels[i] });
+            diagnostics.AppEvent($"details.legacy{i}", "Detalhes com configuração antiga.", DiagnosticLevel.Debug);
+        }
+        var run = Run(1); run.Settings.Diagnostics.MinimumLevel = DiagnosticLevel.Information;
+        diagnostics.Configure(run.Settings.Diagnostics);
+        var attempt = new DiagnosticAttempt(diagnostics, run, "resume");
+        attempt.Event("details.resume", "Detalhes da retomada.", DiagnosticLevel.Debug, new() { ["controlKey"] = "issue.title", ["count"] = 1 });
+        await attempt.FinishAsync(true);
+        var detail = (await Events(diagnostics.Root, run)).Single(e => e.EventName == "details.resume");
+        Check(detail.Level == DiagnosticLevel.Debug && ((JsonElement)detail.Details!["count"]!).GetInt32() == 1, "Retomada perdeu os detalhes técnicos.");
+        var zip = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".zip");
+        var files = await ReadZip((await diagnostics.ExportAsync(zip)).Path);
+        var entries = Encoding.UTF8.GetString(files["app.jsonl"]).Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => JsonSerializer.Deserialize<DiagnosticEvent>(line, Serialization.Options)!).ToArray();
+        Check(entries.Count(e => e.EventName.StartsWith("details.")) == levels.Length + 1 &&
+            entries.Where(e => e.EventName.StartsWith("details.")).All(e => e.Level == DiagnosticLevel.Debug), "Inicialização ou configuração antiga desativou os detalhes.");
+        using var environment = Json(files, "environment.json");
+        Check(environment.RootElement.GetProperty("diagnosticLevel").GetString() == "Debug", "Ambiente exportado não identifica o registro detalhado.");
+    }
     private static async Task Complete()
     {
         await using var diagnostics = new DiagnosticService(DirectoryPath()); var run = Run();

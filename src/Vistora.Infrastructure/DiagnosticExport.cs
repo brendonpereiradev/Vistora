@@ -100,7 +100,9 @@ public sealed partial class DiagnosticService
         {
             var notes = new List<string>();
             if (Warning is not null) notes.Add(Warning);
-            var summary = Consolidate(runId, await LoadSummariesAsync(runId, notes), notes);
+            var attempts = await LoadSummariesAsync(runId, notes);
+            if (attempts.Length == 0) return;
+            var summary = Consolidate(runId, attempts, notes);
             var directory = Path.Combine(Root, "diagnostics", SafeId(runId));
             await AtomicTextAsync(Path.Combine(directory, "resumo.json"), JsonSerializer.Serialize(summary, JsonOptions));
             await AtomicTextAsync(Path.Combine(directory, "resumo.txt"), SummaryText(summary));

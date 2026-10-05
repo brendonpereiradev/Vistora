@@ -24,7 +24,12 @@
     <Style x:Key="FocusRing"><Setter Property="Control.Template"><Setter.Value><ControlTemplate><Rectangle Margin="-2" Stroke="{StaticResource FocusRingBrush}" StrokeThickness="2" RadiusX="5" RadiusY="5" IsHitTestVisible="False"/></ControlTemplate></Setter.Value></Setter></Style>
     <Style x:Key="FocusRingInset"><Setter Property="Control.Template"><Setter.Value><ControlTemplate><Rectangle Margin="2" Stroke="{StaticResource FocusRingBrush}" StrokeThickness="2" IsHitTestVisible="False"/></ControlTemplate></Setter.Value></Setter></Style>
 
-    <Style TargetType="Window"><Setter Property="FontFamily" Value="Segoe UI"/><Setter Property="FontSize" Value="14"/><Setter Property="Foreground" Value="{StaticResource Ink}"/><Setter Property="Background" Value="{StaticResource Canvas}"/></Style>
+    <Style x:Key="WindowIcon" TargetType="Window"><Setter Property="Icon" Value="/Vistora;component/Assets/Branding/vistora-icon.ico"/></Style>
+    <Style TargetType="Window" BasedOn="{StaticResource WindowIcon}"><Setter Property="FontFamily" Value="Segoe UI"/><Setter Property="FontSize" Value="14"/><Setter Property="Foreground" Value="{StaticResource Ink}"/><Setter Property="Background" Value="{StaticResource Canvas}"/></Style>
+    <Style TargetType="{x:Type local:MainWindow}" BasedOn="{StaticResource WindowIcon}"/>
+    <Style TargetType="{x:Type local:ProfileWindow}" BasedOn="{StaticResource WindowIcon}"/>
+    <Style TargetType="{x:Type local:IssueKeyWindow}" BasedOn="{StaticResource WindowIcon}"/>
+    <Style TargetType="{x:Type local:HistoryClearWindow}" BasedOn="{StaticResource WindowIcon}"/>
 
     <Style TargetType="TextBox">
       <Setter Property="Padding" Value="10,8"/><Setter Property="Margin" Value="0,4,0,12"/><Setter Property="BorderBrush" Value="{StaticResource Field}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Background" Value="White"/><Setter Property="VerticalContentAlignment" Value="Center"/>
