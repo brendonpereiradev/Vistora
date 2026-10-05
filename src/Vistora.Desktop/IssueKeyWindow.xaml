@@ -1,0 +1,13 @@
+<Window x:Class="Vistora.Desktop.IssueKeyWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Vincular chamado — Vistora" Width="480" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FocusManager.FocusedElement="{Binding ElementName=KeyBox}">
+  <StackPanel Margin="26,24,26,22">
+    <TextBlock Text="Vincular chamado" FontFamily="Bahnschrift" FontSize="22"/>
+    <TextBlock x:Name="Intro" Style="{StaticResource Hint}" Margin="0,8,0,18"/>
+    <TextBlock Text="Número do chamado" Style="{StaticResource Label}"/>
+    <TextBox x:Name="KeyBox" CharacterCasing="Upper" MaxLength="30" Margin="0,4,0,4" TextChanged="KeyChanged"/>
+    <TextBlock x:Name="KeyError" Foreground="{StaticResource Red}" FontSize="12" MinHeight="18" TextWrapping="Wrap" Margin="0,0,0,16"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button Content="Cancelar" IsCancel="True"/>
+      <Button x:Name="ConfirmButton" Content="Conferir e vincular" Style="{StaticResource Primary}" IsDefault="True" IsEnabled="False" Margin="0" Click="Confirm"/>
+    </StackPanel>
+  </StackPanel>
+</Window>

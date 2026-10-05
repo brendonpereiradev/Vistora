@@ -133,6 +133,13 @@ public static class ProfileValidation
         }
         foreach (var path in profile.Attachments)
             if (!File.Exists(path)) errors.Add($"Anexo não encontrado: {Path.GetFileName(path)}.");
+        errors.AddRange(ValidateSettings(settings));
+        return errors.Distinct().ToList();
+    }
+
+    public static List<string> ValidateSettings(AppSettings settings)
+    {
+        List<string> errors = [];
         if (!Uri.TryCreate(settings.JiraUrl, UriKind.Absolute, out var jira) || jira.Scheme != Uri.UriSchemeHttps)
             errors.Add("O endereço do Jira deve começar com https://.");
         foreach (var url in new[] { settings.PortalUrl, settings.QueueUrl })
