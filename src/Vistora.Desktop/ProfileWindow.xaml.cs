@@ -11,6 +11,7 @@ public partial class ProfileWindow : Window
 {
     public VisitProfile Profile { get; }
     private readonly ObservableCollection<Floor> floors;
+    private readonly ObservableCollection<string> attachments;
     public ProfileWindow(VisitProfile profile)
     {
         InitializeComponent();
@@ -19,7 +20,8 @@ public partial class ProfileWindow : Window
         floors = new(Profile.Floors);
         FloorsGrid.ItemsSource = floors;
         FloorsGrid.SelectedIndex = floors.Count > 0 ? 0 : -1;
-        AttachmentsBox.Text = string.Join(Environment.NewLine, Profile.Attachments);
+        attachments = new(Profile.Attachments);
+        AttachmentsList.ItemsSource = attachments;
     }
     private void SelectedFloorChanged(object sender, SelectionChangedEventArgs e) => ResolutionBox.DataContext = FloorsGrid.SelectedItem;
     private void AddFloor(object sender, RoutedEventArgs e)
@@ -37,11 +39,15 @@ public partial class ProfileWindow : Window
     }
     private void MoveUp(object sender, RoutedEventArgs e) => Move(-1);
     private void MoveDown(object sender, RoutedEventArgs e) => Move(1);
-    private void ChooseAttachments(object sender, RoutedEventArgs e)
+    private void AddAttachments(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Multiselect = true, Title = "Anexos para os chamados" };
         if (dialog.ShowDialog(this) == true)
-            AttachmentsBox.Text = string.Join(Environment.NewLine, AttachmentsBox.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Concat(dialog.FileNames).Distinct());
+            foreach (var path in dialog.FileNames.Where(p => !attachments.Contains(p))) attachments.Add(path);
+    }
+    private void RemoveAttachments(object sender, RoutedEventArgs e)
+    {
+        foreach (var path in AttachmentsList.SelectedItems.Cast<string>().ToList()) attachments.Remove(path);
     }
     private void Save(object sender, RoutedEventArgs e)
     {
@@ -50,7 +56,7 @@ public partial class ProfileWindow : Window
         if (floors.Any(f => string.IsNullOrWhiteSpace(f.Name)) || floors.Select(f => f.Name.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != floors.Count)
         { MessageBox.Show(this, "Use um nome diferente e preenchido para cada pavimento.", "Vistora"); return; }
         Profile.Floors = floors.ToList();
-        Profile.Attachments = AttachmentsBox.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).Distinct().ToList();
+        Profile.Attachments = attachments.ToList();
         Profile.Name = Profile.Name.Trim(); Profile.ReporterEmail = Profile.ReporterEmail.Trim(); Profile.Unit = Profile.Unit.Trim();
         DialogResult = true;
     }

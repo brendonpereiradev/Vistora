@@ -37,8 +37,10 @@ public partial class App : Application
         };
         TaskScheduler.UnobservedTaskException += (_, args) =>
             diagnostics.AppEvent("app.task_error", "Erro em tarefa de segundo plano.", DiagnosticLevel.Error, args.Exception);
+        var pageIndex = Array.IndexOf(e.Args, "--preview-page");
+        var page = preview && pageIndex >= 0 && e.Args.Length > pageIndex + 1 && int.TryParse(e.Args[pageIndex + 1], out var n) ? n : 0;
         MainWindow window;
-        try { window = new MainWindow(preview, preview && e.Args.Contains("--preview-pending"), diagnostics); }
+        try { window = new MainWindow(preview, preview && e.Args.Contains("--preview-pending"), diagnostics, page); }
         catch (Exception ex)
         {
             diagnostics.AppEvent("app.startup_failed", "Não foi possível iniciar o aplicativo.", DiagnosticLevel.Error, ex, code: "STARTUP_FAILED");
@@ -59,8 +61,9 @@ public partial class App : Application
             {
                 await Task.Delay(500);
                 window.UpdateLayout();
-                var bitmap = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96, PixelFormats.Pbgra32);
-                bitmap.Render(window);
+                var client = (FrameworkElement)window.Content;
+                var bitmap = new RenderTargetBitmap((int)client.ActualWidth, (int)client.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(client);
                 var pathIndex = Array.IndexOf(e.Args, "--preview");
                 var path = e.Args.Length > pathIndex + 1 ? e.Args[pathIndex + 1] : "vistora-preview.png";
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
