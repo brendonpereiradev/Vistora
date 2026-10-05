@@ -101,5 +101,3 @@ O aplicativo guarda seus dados em `%LOCALAPPDATA%\Vistora`:
 | `browser/` | Sessão do Microsoft Edge utilizada pelo Vistora. |
 | `logs/` | Registros de abertura e funcionamento do aplicativo. |
 | `diagnostics/` | Eventos, resumos e capturas das tentativas de execução. |
-
-Para configurar a equipe de fechamento e os limites de diagnóstico, consulte o [guia de manutenção](MANUTENCAO.md).

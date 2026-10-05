@@ -14,6 +14,5 @@
     <ProjectReference Include="../Vistora.Core/Vistora.Core.csproj" />
     <ProjectReference Include="../Vistora.Infrastructure/Vistora.Infrastructure.csproj" />
     <ProjectReference Include="../Vistora.Automation.Edge/Vistora.Automation.Edge.csproj" />
-    <Content Include="../../assets/resolucoes.txt" Link="assets/resolucoes.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

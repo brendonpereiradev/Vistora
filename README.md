@@ -56,11 +56,9 @@ A automação usa a interface do Jira em uma janela visível do Microsoft Edge. 
 ```text
 Vistora/
 ├── assets/
-│   ├── screenshots/                     # Capturas com dados fictícios
-│   └── resolucoes.txt                   # Textos genéricos para novos perfis
+│   └── screenshots/                     # Capturas com dados fictícios
 ├── guides/
-│   ├── USO.md                           # Configuração, execução e retomada
-│   └── MANUTENCAO.md                    # Automação, testes e diagnóstico
+│   └── USO.md                           # Configuração, execução e retomada
 ├── scripts/
 │   ├── Bootstrap.ps1                    # Instala o SDK na pasta do projeto
 │   ├── Build.ps1                        # Compila a solução em Release
@@ -181,15 +179,13 @@ No **Histórico**, selecione uma visita e clique em **Exportar log**. Informe um
 
 O pacote reúne resumos, eventos, informações do ambiente e um manifesto com checksums. Perfis e configurações completos, anexos e sessão do navegador ficam fora da exportação. Números dos chamados e identificadores técnicos são mantidos para investigação. Capturas são opcionais e podem conter dados visíveis do chamado.
 
-Os registros ficam em `logs/` e `diagnostics/` dentro de `%LOCALAPPDATA%\Vistora`. A configuração padrão utiliza rotação de 10 MB, retenção de 30 dias e orçamento de 200 MB, preservando os diagnósticos de visitas pendentes. Consulte o [guia de manutenção](guides/MANUTENCAO.md) para detalhes.
+Os registros ficam em `logs/` e `diagnostics/` dentro de `%LOCALAPPDATA%\Vistora`. A configuração padrão utiliza rotação de 10 MB, retenção de 30 dias e orçamento de 200 MB, preservando os diagnósticos de visitas pendentes.
 
 ---
 
 ## Documentação
 
 - [Guia de uso](guides/USO.md): configuração de unidades, execução, retomada e limpeza do histórico.
-- [Guia de manutenção](guides/MANUTENCAO.md): configuração técnica, testes e investigação de falhas.
-- [Modelos de resolução](assets/resolucoes.txt): textos genéricos que podem ser ajustados em cada perfil.
 
 ---
 

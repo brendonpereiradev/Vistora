@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using System.IO;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -125,20 +124,15 @@ public partial class MainWindow : Window
     private void ShowDiagnosticWarning(string message) => Dispatcher.InvokeAsync(() =>
     { DiagnosticWarning.Text = message; DiagnosticWarning.Visibility = Visibility.Visible; });
 
-    private static VisitProfile NewTemplate()
+    private static VisitProfile NewTemplate() => new()
     {
-        var result = new VisitProfile();
-        var file = Path.Combine(AppContext.BaseDirectory, "assets", "resolucoes.txt");
-        if (File.Exists(file))
-            foreach (var block in Regex.Split(File.ReadAllText(file).Trim(), @"\r?\n\s*-\s*\r?\n"))
+        Floors = new[] { "Subsolo", "Térreo", "1° Pavimento", "2° Pavimento", "3° Pavimento", "4° Pavimento" }
+            .Select(name => new Floor
             {
-                var text = block.Trim();
-                var firstLine = text.Split('\n')[0].Trim();
-                var name = firstLine.Replace("Realizada visita preventiva ", "", StringComparison.Ordinal);
-                result.Floors.Add(new Floor { Name = name, Resolution = text });
-            }
-        return result;
-    }
+                Name = name,
+                Resolution = $"Realizada visita preventiva {name}\n\nEquipamentos e serviços verificados.\nObservações: preencha o resultado da visita."
+            }).ToList()
+    };
 
     private void RefreshProfiles(string? selectedId = null)
     {
