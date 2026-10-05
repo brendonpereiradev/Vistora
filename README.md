@@ -5,10 +5,6 @@
 </p>
 
 <p align="center">
-  <strong>Versão 1.0.0</strong> · Windows x64
-</p>
-
-<p align="center">
   <img src="assets/screenshots/executar-visita.png" alt="Tela Executar visita com pavimentos e uma visita pendente" width="49%" />
   <img src="assets/screenshots/historico.png" alt="Histórico de visitas com resultados e etapas dos chamados" width="49%" />
 </p>
