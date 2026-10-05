@@ -1,88 +1,204 @@
-# Vistora
+<h1 align="center">Vistora</h1>
 
-Aplicativo para Windows que automatiza visitas preventivas no Jira pela interface do Microsoft Edge, sem usar a API do Jira.
+<p align="center">
+  Automação de chamados de visitas preventivas no Jira, com execução pelo Microsoft Edge.
+</p>
 
-Cada perfil reúne os dados de um solicitante, uma unidade, seus pavimentos e os textos de resolução. O aplicativo abre um chamado por pavimento, atribui ao técnico conectado, inicia o atendimento e realiza o fechamento com resolução e comentário público.
+<p align="center">
+  <strong>Versão 1.0.0</strong> · Windows x64
+</p>
 
-Versão atual: **1.0.0**.
+<p align="center">
+  <img src="assets/screenshots/executar-visita.png" alt="Tela Executar visita com pavimentos e uma visita pendente" width="49%" />
+  <img src="assets/screenshots/historico.png" alt="Histórico de visitas com resultados e etapas dos chamados" width="49%" />
+</p>
 
-## Como executar
+<p align="center">
+  <sub>Capturas da aplicação com dados fictícios.</sub>
+</p>
 
-Baixe `Vistora-1.0.0-Windows-x64.zip` na [release mais recente](https://github.com/brendonpereiradev/Vistora/releases/latest), extraia todo o conteúdo para uma pasta e execute `Vistora.exe`. Mantenha os arquivos extraídos junto ao executável, incluindo a pasta `.playwright`.
+---
 
-O pacote é para Windows x64 e inclui o runtime .NET. O Microsoft Edge precisa estar instalado. Nas **Configurações**, informe os endereços do Jira; em **Perfis**, cadastre a unidade, os dados do solicitante, os pavimentos e os textos de resolução. Entre na sua conta pela janela do Edge antes de executar a primeira visita.
+## Sobre o projeto
 
-A validação desta release foi realizada no Windows 10 x64, com testes de automação em páginas locais do Edge. A execução no Windows 11 e o ciclo completo de abertura e fechamento no Jira real ainda precisam de validação nesses ambientes. O fluxo e as permissões do Jira devem corresponder aos configurados no aplicativo.
+Vistora é uma aplicação desktop desenvolvida em .NET 10 e WPF para registrar visitas preventivas por unidade e pavimento. O operador cadastra os dados do solicitante e os textos da visita, escolhe os pavimentos e acompanha o processamento dos chamados na tela.
 
-## Código fonte
+A automação usa a interface do Jira em uma janela visível do Microsoft Edge. Para cada pavimento selecionado, abre um chamado, atribui ao técnico conectado, inicia o atendimento e envia o fechamento. A resolução cadastrada também é utilizada no comentário público. O progresso é salvo localmente para permitir a retomada de visitas interrompidas.
 
-Este repositório contém o código fonte, testes, scripts de compilação e modelos genéricos necessários ao aplicativo. Configurações reais, históricos, sessões do navegador, anexos, capturas e arquivos compilados ficam fora do versionamento.
+---
 
-## Compilar e testar
+## Funcionalidades
 
-Requisitos: Windows, SDK .NET 10 e Microsoft Edge. Os scripts são executados a partir da raiz do projeto no PowerShell.
+| Funcionalidade | Descrição |
+|---|---|
+| Perfis de unidades | Cadastra solicitante, unidade, dados do formulário e anexos opcionais. |
+| Pavimentos e resoluções | Permite adicionar, remover e ordenar pavimentos, com setor, sala e texto próprios. |
+| Seleção da visita | Processa apenas os pavimentos marcados pelo operador. |
+| Automação no Edge | Preenche os formulários e executa as transições pela interface do Jira, sem integração com sua API. |
+| Acompanhamento | Mostra o número do chamado e as etapas de cada pavimento durante a execução. |
+| Retomada de pendências | Recupera os dados originais da visita e confere os chamados antes de continuar. |
+| Conferência de resultados | Verifica responsável e atendimento; no fechamento, confere status, resolução, comentário público e equipe. |
+| Histórico de visitas | Reúne resultados, progresso e detalhes dos chamados. |
+| Exportação de diagnóstico | Gera um ZIP com registros da visita e de suas retomadas para análise. |
+| Limpeza do histórico | Remove visitas e seus diagnósticos locais após confirmação do operador. |
 
-```powershell
-# Instalar o SDK somente na pasta do projeto, se necessário
-.\scripts\Bootstrap.ps1
+---
 
-# Compilar
-.\scripts\Build.ps1
+## Stack
 
-# Testar regras, persistência, interface e navegador com páginas locais controladas
-.\scripts\Test.ps1
+- **.NET 10**: execução das bibliotecas e do aplicativo Windows.
+- **WPF**: janelas, formulários, navegação e acompanhamento das visitas.
+- **Playwright para .NET**: identificação dos controles e automação do Jira no Microsoft Edge.
+- **System.Text.Json**: armazenamento de perfis, configurações e progresso das visitas.
+- **PowerShell**: preparação do SDK, compilação, testes e publicação.
+- **Projetos de teste em C#**: verificações de regras, persistência, interface e navegador com páginas locais controladas.
 
-# Gerar um aplicativo com o runtime incluído
-.\scripts\Publish.ps1
+---
+
+## Estrutura do projeto
+
+```text
+Vistora/
+├── assets/
+│   ├── screenshots/                     # Capturas com dados fictícios
+│   └── resolucoes.txt                   # Textos genéricos para novos perfis
+├── guides/
+│   ├── USO.md                           # Configuração, execução e retomada
+│   └── MANUTENCAO.md                    # Automação, testes e diagnóstico
+├── scripts/
+│   ├── Bootstrap.ps1                    # Instala o SDK na pasta do projeto
+│   ├── Build.ps1                        # Compila a solução em Release
+│   ├── Test.ps1                         # Executa as verificações automatizadas
+│   └── Publish.ps1                      # Gera a aplicação e o ZIP de distribuição
+├── src/
+│   ├── Vistora.Core/                    # Modelos, validação e execução de visitas
+│   ├── Vistora.Infrastructure/          # Persistência, logs e exportação
+│   ├── Vistora.Automation.Edge/         # Formulários e transições no Jira
+│   └── Vistora.Desktop/                 # Interface WPF e recursos da marca
+├── tests/
+│   ├── Vistora.Tests/                   # Regras, persistência e diagnóstico
+│   ├── Vistora.DesktopTests/            # Controles e comportamento da interface
+│   └── Vistora.BrowserTests/            # Automação real do Edge em ambiente local
+├── LICENSE                              # Licença MIT
+├── Vistora.sln                          # Solução .NET
+└── README.md                            # Apresentação do projeto
 ```
 
-Os testes de navegador abrem o Edge em um ambiente local de teste. Para executar os testes de regras, persistência e interface sem abrir o navegador, use `.\scripts\Test.ps1 -SkipBrowser`.
+---
 
-A publicação gera o aplicativo e o ZIP `Vistora-1.0.0-Windows-x64.zip` em `output/release/1.0.0`. Esses arquivos não entram no Git. O pacote inteiro deve ser mantido junto ao executável, incluindo a pasta `.playwright`.
+## Arquitetura
 
-O script recusa uma pasta de aplicativo com arquivos ou um ZIP já existente. Para gerar outro pacote sem misturar publicações, informe uma pasta nova, por exemplo `.\scripts\Publish.ps1 -OutputDirectory .\output\release\1.0.0\nova-validacao`.
+A solução está dividida em quatro projetos:
 
-## Configuração local
+1. **Vistora.Core**: define perfis, pavimentos e estados da visita. Valida as entradas, seleciona pendências e coordena abertura, atribuição, atendimento e fechamento.
+2. **Vistora.Infrastructure**: salva os dados em JSON, mantém cópias anteriores dos arquivos e registra os diagnósticos. Também reúne a exportação e a limpeza de dados das visitas.
+3. **Vistora.Automation.Edge**: implementa as operações no navegador. Identifica campos, preenche formulários, executa transições e lê os resultados no Jira.
+4. **Vistora.Desktop**: apresenta as telas de execução, perfis, histórico e configuração, conectando as ações do operador às demais camadas.
 
-Os endereços padrão e os modelos incluídos são exemplos fictícios. Configure os endereços reais do Jira nas configurações do aplicativo, preencha o perfil da unidade e ajuste os pavimentos e suas resoluções antes de executar.
+O motor registra a intenção de uma ação antes de enviá-la ao Jira e salva o resultado depois da conferência. Quando um envio fica sem confirmação, a visita conserva essa pendência para que o operador confira o chamado na retomada.
 
-Os dados são salvos em `%LOCALAPPDATA%\Vistora`. O login ocorre na janela do Edge e a sessão permanece nesse diretório. A equipe de fechamento é definida por `ClosingTeam` em `settings.json`; o valor de exemplo é `Field Services`. Uma execução guarda uma cópia das configurações e dos textos utilizados.
+---
 
-A aba **Executar visita** concentra a execução e a retomada. Ao escolher um perfil, sua visita pendente é selecionada quando não há ambiguidade. O campo **Visita pendente** permite escolher entre várias visitas, incluindo as de perfis excluídos. A retomada usa os dados originais da visita, preserva os chamados já registrados e confere seu estado antes das próximas ações; os pavimentos dessa visita ficam disponíveis para consulta.
+## Configuração local e retomada
 
-Se uma abertura foi enviada sem identificação do número, a retomada solicita o chamado já criado e confere seus dados no Jira antes de vinculá-lo. Cancelar ou informar um chamado divergente impede a continuação, evitando novas aberturas automáticas. O histórico mostra os resultados e permite exportar logs; as ações de execução ficam na tela principal.
+Em **Configurações**, informe o endereço do Jira, o formulário de visita preventiva e a fila de atendimento. Os três endereços devem usar HTTPS e pertencer ao mesmo servidor. Os valores iniciais são exemplos e precisam ser substituídos pelos do ambiente de uso.
 
-O fechamento aguarda o término das requisições de gravação, a saída do formulário e o status final antes de recarregar e conferir o chamado. Se um fechamento anterior ficou pendente e o chamado ainda está em atendimento com o técnico conectado, a retomada pede uma conferência explícita na janela do Edge. Autorize uma nova tentativa somente se a resolução e o comentário público ainda não foram enviados. Se já foram enviados, escolha **Não** e conclua o fechamento no Jira; a próxima retomada confere o resultado sem repetir o comentário. Chamados já fechados são sempre conferidos sem novo envio.
+Em **Perfis e pavimentos**, cadastre o solicitante e a unidade. Ajuste os pavimentos e suas resoluções para o trabalho realizado. Os anexos do perfil, quando informados, são enviados em cada chamado.
 
-O fluxo e os seletores precisam corresponder à interface e às permissões do Jira configurado. `SelectorOverrides` permite ajustar a identificação dos controles nos dados locais.
+O login é feito na janela do Edge. A conta conectada identifica o técnico; o solicitante é definido pelo perfil da unidade. Perfis, configurações, visitas e sessão do navegador ficam em `%LOCALAPPDATA%\Vistora`. A equipe de fechamento é configurada em `ClosingTeam`, no arquivo local `settings.json`.
 
-No **Histórico**, o botão **Limpar histórico e pendências** remove todas as visitas locais de todas as unidades, inclusive as pendentes e as de perfis excluídos, seus backups, logs e capturas. A confirmação mostra as quantidades e tem **Cancelar** como opção padrão. A limpeza é permanente: as visitas removidas deixam de permitir retomada pelo Vistora. Os chamados no Jira, perfis, configurações, login do Edge, logs gerais do aplicativo e ZIPs já exportados são preservados. O botão fica bloqueado durante carregamento, execução, verificação de acesso, exportação ou outra limpeza. Se houver falha, a tela mostra os registros restantes e permite repetir a operação.
+### Retomar uma visita
 
-## Logs e exportação para análise
+A tela **Executar visita** reúne as visitas pendentes, inclusive as de perfis excluídos. Se houver várias opções, escolha a visita no campo **Visita pendente**. A retomada usa as configurações e os textos salvos na criação da visita.
 
-Cada execução e retomada registra uma linha do tempo com etapas, resultados conferidos, tempos, causas técnicas das falhas e detalhes de investigação sempre ativados. O **Histórico** mostra os resultados e o progresso nas tabelas e concentra o botão **Exportar log**, inclusive para visitas bem-sucedidas.
+Se uma abertura foi enviada sem o número do chamado, informe o chamado existente quando solicitado. O aplicativo confere seus dados antes de vinculá-lo. Um fechamento sem confirmação pode exigir conferência na janela do Edge: autorize outra tentativa somente se a resolução e o comentário público ainda não tiverem sido enviados. Os procedimentos estão no [guia de uso](guides/USO.md).
 
-Para analisar o comportamento em diferentes computadores:
+---
 
-1. Execute o Vistora no computador de teste.
-2. No **Histórico**, selecione a visita e clique em **Exportar log**.
-3. Informe, se desejar, um rótulo como “Teste A”, escolha se quer incluir capturas e salve o ZIP fora da pasta de dados do Vistora.
-4. Anexe o ZIP na conversa para análise. Repita em outra máquina para comparar os resultados.
+## Como compilar e executar
 
-O pacote contém `resumo.txt`, `resumo.json`, os eventos de todas as tentativas disponíveis, informações do ambiente de origem e `manifest.json` com versões e checksums dos arquivos. Credenciais, sessão do navegador, perfis completos, configurações completas e anexos ficam fora do pacote. Números dos chamados e identificadores técnicos são conservados. Capturas ficam desmarcadas por padrão e podem conter dados visíveis do chamado.
+### Pré-requisitos
 
-Sem uma visita selecionada no **Histórico**, o mesmo botão **Exportar log** permite escolher uma abertura do aplicativo para análise. Os detalhes técnicos são registrados desde a inicialização e em todas as tentativas, inclusive retomadas de visitas antigas.
+- Windows x64 com Microsoft Edge instalado.
+- SDK .NET 10 para compilar e testar, instalado no computador ou preparado pelo script abaixo.
+- Acesso ao Jira e permissões para abrir, atribuir, iniciar e fechar os chamados do fluxo configurado.
+- PowerShell, com os comandos executados a partir da raiz do repositório.
 
-Os logs ficam em `%LOCALAPPDATA%\Vistora\logs`; diagnósticos de visitas ficam em `diagnostics\<id>\attempts\<tentativa>`. Datas dos arquivos estão em UTC. Uma exportação durante a execução registra apenas o progresso observado e identifica o resultado como parcial. Dados antigos sem logs continuam permitindo retomada, mas não recebem métricas retroativas.
+### Passo a passo
 
-Por padrão, os arquivos giram a cada 10 MB, a retenção é de 30 dias e o orçamento de logs/capturas é de 200 MB. Diagnósticos de visitas pendentes e a sessão atual são preservados; os arquivos de progresso nunca são removidos pela limpeza. Um aviso informa quando o diagnóstico fica incompleto ou o orçamento é atingido. Os limites podem ser ajustados no grupo `Diagnostics` de `settings.json` com o aplicativo fechado. O nível de registro permanece em `Debug`, inclusive quando uma configuração antiga indica outro nível.
+1. Clone o repositório:
 
-## Estrutura
+   ```powershell
+   git clone https://github.com/brendonpereiradev/Vistora.git
+   cd Vistora
+   ```
 
-- `src/Vistora.Core`: modelos, validação, seleção e execução de visitas.
-- `src/Vistora.Infrastructure`: persistência dos dados locais.
-- `src/Vistora.Automation.Edge`: automação da interface com Playwright para .NET.
-- `src/Vistora.Desktop`: interface WPF.
-- `tests`: verificações de regras, persistência, diagnósticos, limpeza, interface e navegador.
-- `scripts`: instalação do SDK, compilação, testes e publicação local.
-- `assets`: modelos genéricos usados na criação de perfis.
+2. Se precisar do SDK, instale-o apenas na pasta do projeto:
+
+   ```powershell
+   .\scripts\Bootstrap.ps1
+   ```
+
+3. Compile a solução:
+
+   ```powershell
+   .\scripts\Build.ps1
+   ```
+
+4. Inicie o aplicativo usando o SDK encontrado pelos scripts:
+
+   ```powershell
+   . .\scripts\Common.ps1
+   & (Get-VistoraDotnet) run --project .\src\Vistora.Desktop -c Release --no-build
+   ```
+
+### Comandos disponíveis
+
+| Comando | Descrição |
+|---|---|
+| `.\scripts\Bootstrap.ps1` | Instala o SDK localmente em `.tools/dotnet`. |
+| `.\scripts\Build.ps1` | Compila todos os projetos em Release. |
+| `.\scripts\Test.ps1` | Executa os testes de regras, persistência, interface e navegador. |
+| `.\scripts\Test.ps1 -SkipBrowser` | Executa os testes de regras, persistência e interface sem abrir o Edge. |
+| `.\scripts\Publish.ps1` | Gera a aplicação com runtime incluído e o ZIP da versão. |
+| `.\scripts\Publish.ps1 -OutputDirectory .\output\minha-publicacao` | Publica em uma pasta alternativa. |
+
+Os testes do navegador usam páginas locais controladas. Os projetos de teste são executáveis acionados pelo script `Test.ps1`.
+
+A publicação da versão 1.0.0 gera `output/release/1.0.0/Vistora/` e `Vistora-1.0.0-Windows-x64.zip` na mesma pasta de versão. Extraia o ZIP inteiro e abra `Vistora.exe`. O runtime .NET acompanha o pacote; o Microsoft Edge precisa estar instalado. Mantenha os arquivos e a pasta `.playwright` junto ao executável. Para repetir uma publicação, escolha uma pasta de saída nova.
+
+---
+
+## Fluxo de uso
+
+1. **Configure o ambiente:** salve os endereços do Jira, do formulário e da fila em Configurações.
+2. **Prepare o perfil:** preencha os dados em Perfis e pavimentos e revise a resolução de cada pavimento.
+3. **Confira o acesso:** em Executar visita, clique em Verificar acesso ao Edge e faça login quando solicitado.
+4. **Execute a visita:** escolha o perfil, marque os pavimentos e clique em Executar visita preventiva. Se houver uma pendência selecionada, o botão permite retomar essa visita.
+5. **Acompanhe o resultado:** consulte as etapas e os chamados na execução e no Histórico. Use Parar execução para interromper o fluxo; uma ação já enviada aguarda seu resultado antes da parada.
+
+---
+
+## Logs e diagnóstico
+
+No **Histórico**, selecione uma visita e clique em **Exportar log**. Informe um rótulo opcional, escolha se deseja incluir capturas de falha e salve o ZIP fora da pasta de dados do Vistora. Sem uma visita selecionada, a exportação permite escolher uma abertura do aplicativo.
+
+O pacote reúne resumos, eventos, informações do ambiente e um manifesto com checksums. Perfis e configurações completos, anexos e sessão do navegador ficam fora da exportação. Números dos chamados e identificadores técnicos são mantidos para investigação. Capturas são opcionais e podem conter dados visíveis do chamado.
+
+Os registros ficam em `logs/` e `diagnostics/` dentro de `%LOCALAPPDATA%\Vistora`. A configuração padrão utiliza rotação de 10 MB, retenção de 30 dias e orçamento de 200 MB, preservando os diagnósticos de visitas pendentes. Consulte o [guia de manutenção](guides/MANUTENCAO.md) para detalhes.
+
+---
+
+## Documentação
+
+- [Guia de uso](guides/USO.md): configuração de unidades, execução, retomada e limpeza do histórico.
+- [Guia de manutenção](guides/MANUTENCAO.md): configuração técnica, testes e investigação de falhas.
+- [Modelos de resolução](assets/resolucoes.txt): textos genéricos que podem ser ajustados em cada perfil.
+
+---
+
+## Licença e termos
+
+Distribuído sob a licença MIT. Consulte o arquivo [LICENSE](LICENSE).
+
+As dependências de terceiros mantêm suas próprias licenças. O acesso ao Jira depende das permissões da conta e da configuração do ambiente utilizado.

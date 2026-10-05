@@ -61,6 +61,10 @@ public partial class App : Application
                 window.UpdateLayout();
                 var client = (FrameworkElement)window.Content;
                 var bitmap = new RenderTargetBitmap((int)client.ActualWidth, (int)client.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+                var background = new DrawingVisual();
+                using (var drawing = background.RenderOpen())
+                    drawing.DrawRectangle(window.Background ?? Brushes.White, null, new Rect(0, 0, client.ActualWidth, client.ActualHeight));
+                bitmap.Render(background);
                 bitmap.Render(client);
                 var pathIndex = Array.IndexOf(e.Args, "--preview");
                 var path = e.Args.Length > pathIndex + 1 ? e.Args[pathIndex + 1] : "vistora-preview.png";
