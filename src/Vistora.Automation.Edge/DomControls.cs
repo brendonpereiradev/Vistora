@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Text;
+using System.Diagnostics;
 using Microsoft.Playwright;
 using Vistora.Core;
 
@@ -162,29 +163,80 @@ internal sealed class DomControls(IPage page, IReadOnlyDictionary<string, string
         return null;
     }
 
-    public async Task ClickAsync(string key, string[] names, ILocator? scope = null)
+    public async Task ClickAsync(string key, string[] names, ILocator? scope = null,
+        TimeSpan? waitTimeout = null, CancellationToken cancellationToken = default)
     {
-        if (overrides.TryGetValue(key, out var selector))
+        var begin = Stopwatch.GetTimestamp();
+        var timeout = waitTimeout ?? TimeSpan.Zero;
+        var waiting = false;
+        do
         {
-            await (await UniqueAsync((scope ?? page.Locator("body")).Locator(selector), names[0])).ClickAsync();
-            diagnostics?.Event("action.clicked", "Clique executado; o resultado ainda requer conferência.", details: new() { ["controlKey"] = key, ["strategy"] = "override" }, outcome: "clicked");
-            return;
+            cancellationToken.ThrowIfCancellationRequested();
+            var locator = await TryActionAsync(key, names, scope);
+            if (locator is not null && (waitTimeout is null || await locator.IsEnabledAsync()))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                // A espera só repete a busca. Depois do clique, o chamador confere o resultado.
+                await locator.ClickAsync(waitTimeout is null ? null : new()
+                {
+                    Timeout = (float)Math.Max(1, (timeout - Stopwatch.GetElapsedTime(begin)).TotalMilliseconds)
+                });
+                if (waiting) diagnostics?.Event("control.wait_finished", "Ação carregada e disponível.",
+                    details: new() { ["controlKey"] = key }, durationMs: Stopwatch.GetElapsedTime(begin).TotalMilliseconds);
+                diagnostics?.Event("action.clicked", "Clique executado; o resultado ainda requer conferência.",
+                    details: new() { ["controlKey"] = key, ["strategy"] = overrides.ContainsKey(key) ? "override" : "page" }, outcome: "clicked");
+                return;
+            }
+            var remaining = timeout - Stopwatch.GetElapsedTime(begin);
+            if (remaining <= TimeSpan.Zero) break;
+            if (!waiting)
+            {
+                waiting = true;
+                diagnostics?.Event("control.wait_started", "Aguardando o carregamento da ação.", details: new() { ["controlKey"] = key });
+            }
+            await Task.Delay(remaining < TimeSpan.FromMilliseconds(200) ? remaining : TimeSpan.FromMilliseconds(200), cancellationToken);
+        } while (Stopwatch.GetElapsedTime(begin) < timeout);
+        var code = waitTimeout is null ? "FIELD_NOT_FOUND" : "TRANSITION_LOAD_TIMEOUT";
+        diagnostics?.Event("control.action_missing", "Ação indisponível na página.", DiagnosticLevel.Warning,
+            new() { ["controlKey"] = key }, errorCode: code, durationMs: Stopwatch.GetElapsedTime(begin).TotalMilliseconds);
+        var error = new InvalidOperationException(waitTimeout is null
+            ? $"A ação “{names[0]}” não está disponível na página atual."
+            : $"A ação “{names[0]}” não carregou no tempo esperado. Confira o menu de status do Jira e retome pela aba Executar visita.");
+        error.Data["DiagnosticCode"] = code;
+        throw error;
+    }
+
+    private async Task<ILocator?> TryActionAsync(string key, string[] names, ILocator? scope)
+    {
+        async Task<ILocator?> CandidateAsync(ILocator locator, string strategy)
+        {
+            locator = locator.Filter(new() { Visible = true });
+            var count = await locator.CountAsync(); Lookup(key, strategy, count);
+            if (count > 1)
+            {
+                diagnostics?.Event("control.ambiguous", "Mais de uma ação foi encontrada.", DiagnosticLevel.Warning,
+                    new() { ["controlKey"] = key, ["count"] = count }, errorCode: "FIELD_AMBIGUOUS");
+                var error = new InvalidOperationException($"A página não oferece uma opção única para “{names[0]}”. A execução foi interrompida para conferência.");
+                error.Data["DiagnosticCode"] = "FIELD_AMBIGUOUS";
+                throw error;
+            }
+            return count == 1 ? locator : null;
         }
+        if (overrides.TryGetValue(key, out var selector))
+            return await CandidateAsync((scope ?? page.Locator("body")).Locator(selector), "override");
         foreach (var name in names)
         {
             foreach (var role in new[] { AriaRole.Button, AriaRole.Link, AriaRole.Menuitem })
             {
                 var locator = scope is null ? page.GetByRole(role, new() { Name = name, Exact = true }) : scope.GetByRole(role, new() { Name = name, Exact = true });
-                var count = await locator.CountAsync(); Lookup(key, role.ToString(), count);
-                if (await IsUniqueVisibleAsync(locator))
-                { await locator.ClickAsync(); diagnostics?.Event("action.clicked", "Clique executado; o resultado ainda requer conferência.", details: new() { ["controlKey"] = key }, outcome: "clicked"); return; }
+                var candidate = await CandidateAsync(locator, role.ToString());
+                if (candidate is not null) return candidate;
             }
-            var text = (scope is null ? page.GetByText(name, new() { Exact = true }) : scope.GetByText(name, new() { Exact = true })).Filter(new() { Visible = true });
-            if (await IsUniqueVisibleAsync(text))
-            { await text.ClickAsync(); diagnostics?.Event("action.clicked", "Clique executado; o resultado ainda requer conferência.", details: new() { ["controlKey"] = key }, outcome: "clicked"); return; }
+            var text = scope is null ? page.GetByText(name, new() { Exact = true }) : scope.GetByText(name, new() { Exact = true });
+            var textCandidate = await CandidateAsync(text, "text");
+            if (textCandidate is not null) return textCandidate;
         }
-        diagnostics?.Event("control.action_missing", "Ação indisponível na página.", DiagnosticLevel.Warning, new() { ["controlKey"] = key }, errorCode: "FIELD_NOT_FOUND");
-        throw new InvalidOperationException($"A ação “{names[0]}” não está disponível na página atual.");
+        return null;
     }
 
     public static async Task<bool> IsUniqueVisibleAsync(ILocator locator) => await locator.CountAsync() == 1 && await locator.IsVisibleAsync();

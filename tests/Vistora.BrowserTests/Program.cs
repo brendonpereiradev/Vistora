@@ -127,6 +127,9 @@ var passwordForm = false;
 var portalVisits = 0;
 var rejectClosing = false;
 var closeRequests = 0;
+var transitionDelayMs = 1200;
+var missingTransition = false;
+var ambiguousTransition = false;
 app.MapPost("/fixture/close", async (HttpContext ctx) =>
 {
     closeRequests++;
@@ -141,7 +144,7 @@ app.MapGet("/{**path}", (HttpContext ctx) =>
     if (passwordForm) return Results.Content("<html><body><input type='password' value='senha-sentinel'></body></html>", "text/html; charset=utf-8");
     if (loginMode || incompleteForm)
         return Results.Content("<html><body><label>Abrir esta requisição em nome de*<span>(required)</span></label><p>Carregando</p></body></html>", "text/html; charset=utf-8");
-    return Results.Content(Fixture.Html(hidePublic, wrongLatestResolution), "text/html; charset=utf-8");
+    return Results.Content(Fixture.Html(hidePublic, wrongLatestResolution, transitionDelayMs, missingTransition, ambiguousTransition), "text/html; charset=utf-8");
 });
 await app.StartAsync();
 var root = Path.Combine(Path.GetTempPath(), "VistoraBrowserTests", Guid.NewGuid().ToString("N"));
@@ -187,9 +190,19 @@ try
     var eventFiles = Directory.EnumerateFiles(store.DiagnosticsDirectory(run.Id), "events.jsonl", SearchOption.AllDirectories).ToArray();
     var eventText = string.Concat(await Task.WhenAll(eventFiles.Select(path => File.ReadAllTextAsync(path))));
     Check(eventFiles.Length == 2 && eventText.Contains("close.confirmed") && eventText.Contains("control.lookup"), "Linha do tempo do navegador ausente.");
+    var transitionEvents = eventText.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+        .Select(line => JsonSerializer.Deserialize<DiagnosticEvent>(line, Serialization.Options)!).ToArray();
+    foreach (var key in new[] { "issue.start", "issue.close" })
+    {
+        Check(transitionEvents.Count(e => e.EventName == "control.wait_finished" && e.Details?.GetValueOrDefault("controlKey")?.ToString() == key && e.DurationMs >= 1000) == 2,
+            $"A espera pelo menu lento não foi registrada para {key}.");
+        Check(transitionEvents.Count(e => e.EventName == "action.clicked" && e.Details?.GetValueOrDefault("controlKey")?.ToString() == key) == 2,
+            $"A espera repetiu o clique da transição {key}.");
+    }
     Check(!eventText.Contains(profile.ReporterEmail) && !eventText.Contains(profile.FullName) && !eventText.Contains(profile.Floors[0].Resolution), "Dados do formulário vazaram para os logs.");
     Console.WriteLine("PASS: navegador registra etapas e retomadas sem valores privados do formulário.");
     Console.WriteLine("PASS: retomada após criação atribui, inicia e fecha os mesmos chamados.");
+    Console.WriteLine("PASS: menus de início e fechamento carregam com atraso; opção desabilitada e menuitem aguardam sem repetir cliques.");
     Check(run.Floors.Select(f => f.IssueKey).Distinct().Count() == 2, "Chamados não são distintos.");
     Console.WriteLine("PASS: fluxo completo com rótulos (required) ocultos e comboboxes cobertos pelo valor selecionado.");
     Console.WriteLine("PASS: status antecipado e modal aberto/fechado aguardam a gravação lenta sem perder ou repetir o fechamento.");
@@ -239,6 +252,51 @@ try
     });
     Check(rejectedRun.State == RunState.Completed && rejectedRun.Floors[0].IssueKey == rejectedKey && retryConfirmations == 1 && closeRequests == requestsBeforeRetry + 1, rejectedRun.Message);
     Console.WriteLine("PASS: envio rejeitado preserva a pendência e a conferência explícita retoma o mesmo chamado.");
+
+    missingTransition = true; transitionDelayMs = 0;
+    var transitionProbe = ProfileValidation.CreateRun(rejectedProfile, new AppSettings());
+    transitionProbe.Settings = Serialization.Copy(run.Settings); transitionProbe.Settings.TimeoutSeconds = 1;
+    await engine.ExecuteAsync(transitionProbe, default);
+    var transitionKey = transitionProbe.Floors[0].IssueKey;
+    Check(transitionProbe.State == RunState.Failed && transitionProbe.Floors[0].Stage == FloorStage.Assigned && transitionProbe.Floors[0].PendingAction == PendingAction.Start,
+        "Ação ausente foi aceita ou perdeu o progresso pendente.");
+    var transitionSummaryPath = Directory.EnumerateFiles(store.DiagnosticsDirectory(transitionProbe.Id), "summary.json", SearchOption.AllDirectories).Single();
+    using (var summary = JsonDocument.Parse(await File.ReadAllTextAsync(transitionSummaryPath)))
+    {
+        Check(summary.RootElement.GetProperty("errorCode").GetString() == "TRANSITION_LOAD_TIMEOUT" && summary.RootElement.GetProperty("failedStep").GetString() == "start.submit",
+            "Menu que não carregou perdeu a causa técnica ou a etapa da falha.");
+        var elapsed = summary.RootElement.GetProperty("stepDurationsMs").GetProperty("start.submit").GetDouble();
+        Check(elapsed >= 1000 && elapsed < 3000, "A espera da transição não respeitou o tempo configurado.");
+    }
+    Console.WriteLine("PASS: menu sem ação respeita o limite e preserva chamado, etapa e causa para retomada.");
+
+    missingTransition = false; ambiguousTransition = true;
+    transitionProbe.Settings.TimeoutSeconds = 10;
+    await engine.ExecuteAsync(transitionProbe, default);
+    transitionSummaryPath = Directory.EnumerateFiles(store.DiagnosticsDirectory(transitionProbe.Id), "summary.json", SearchOption.AllDirectories).OrderBy(File.GetLastWriteTimeUtc).Last();
+    using (var summary = JsonDocument.Parse(await File.ReadAllTextAsync(transitionSummaryPath)))
+        Check(summary.RootElement.GetProperty("errorCode").GetString() == "FIELD_AMBIGUOUS" && transitionProbe.Floors[0].Stage == FloorStage.Assigned,
+            "Menu com ações duplicadas executou uma transição ou perdeu a causa técnica.");
+    Console.WriteLine("PASS: menu com ações duplicadas interrompe antes do clique.");
+
+    ambiguousTransition = false; transitionDelayMs = 1200;
+    transitionProbe.Settings.SelectorOverrides["issue.start"] = "#start";
+    await using (var transitionBrowser = new EdgeJiraAutomation(store))
+    {
+        await transitionBrowser.ConnectAsync(transitionProbe.Settings, _ => { }, default, transitionKey);
+        await transitionBrowser.StartAsync(transitionProbe, transitionProbe.Floors[0]);
+        missingTransition = true;
+        await transitionBrowser.ReadIssueAsync(transitionProbe, transitionProbe.Floors[0], default);
+        using var stopWaiting = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        try { await transitionBrowser.PrepareCloseAsync(transitionProbe, transitionProbe.Floors[0], stopWaiting.Token); throw new Exception("Cancelamento da espera ignorado."); }
+        catch (OperationCanceledException) when (stopWaiting.IsCancellationRequested) { }
+    }
+    missingTransition = false;
+    var closeRequestsBeforeResume = closeRequests;
+    await engine.ExecuteAsync(transitionProbe, default);
+    Check(transitionProbe.State == RunState.Completed && transitionProbe.Floors[0].IssueKey == transitionKey && closeRequests == closeRequestsBeforeResume + 1,
+        "A retomada após esperar/cancelar o menu duplicou o chamado ou o fechamento.");
+    Console.WriteLine("PASS: seletor configurado aguarda o início; cancelar a espera do fechamento permite retomar o mesmo chamado.");
 
     loginMode = true;
     var loginProbe = ProfileValidation.CreateRun(profile, new AppSettings()); loginProbe.Settings = Serialization.Copy(run.Settings);
@@ -329,12 +387,15 @@ static void Check(bool condition, string message) { if (!condition) throw new Ex
 
 static class Fixture
 {
-    public static string Html(bool hidePublic, bool wrongLatestResolution) => """
+    public static string Html(bool hidePublic, bool wrongLatestResolution, int transitionDelayMs, bool missingTransition, bool ambiguousTransition) => """
     <!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Jira — ambiente local de teste</title>
     <style>body{font:16px Segoe UI;padding:28px;background:#f6f8fb;color:#123743}main{max-width:850px;margin:auto;background:white;padding:24px}label{display:block;margin:14px 0 4px}input,textarea,select{font:inherit;padding:8px;width:90%}button{padding:10px;margin:8px}dl>div{display:flex;gap:24px;padding:8px;border-bottom:1px solid #ddd}dl>div>span:first-child{width:250px}dialog{width:650px}pre{white-space:pre-wrap}.options{background:#eef4f4}.options>div{padding:10px;cursor:pointer}.sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}.combo-control{position:relative}.selected-overlay{position:absolute;inset:0;background:#eef4f4;z-index:2;padding:8px;width:90%}</style></head><body><main id="main"></main>
     <script>
     const hidePublic = __HIDE_PUBLIC__;
     const wrongLatestResolution = __WRONG_LATEST_RESOLUTION__;
+    const transitionDelayMs = __TRANSITION_DELAY_MS__;
+    const missingTransition = __MISSING_TRANSITION__;
+    const ambiguousTransition = __AMBIGUOUS_TRANSITION__;
     const main=document.getElementById('main'); const issues=JSON.parse(localStorage.getItem('issues')||'{}');
     const issueKey=location.pathname.match(/SD-\d+/)?.[0];
     const escape=s=>String(s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
@@ -393,7 +454,10 @@ static class Fixture
       setTimeout(()=>document.getElementById('status').hidden=false,700);
       document.getElementById('status').onclick=()=>{
         const menu=document.getElementById('menu');
-        if(issue.status==='Aguardando N2'){menu.innerHTML='<button id="start">Iniciar Atendimento</button>';document.getElementById('start').onclick=()=>{issue.status='Em andamento N2';persist();location.reload()}}
+        menu.innerHTML='<p>-</p><p>View workflow</p>';
+        setTimeout(()=>{
+        if(missingTransition)return;
+        if(issue.status==='Aguardando N2'){menu.innerHTML='<button id="start" disabled>Iniciar Atendimento</button>';if(ambiguousTransition){menu.innerHTML+='<button>Iniciar Atendimento</button>';return}const start=document.getElementById('start');if(issueKey.endsWith('2'))start.setAttribute('role','menuitem');setTimeout(()=>start.disabled=false,400);start.onclick=()=>{issue.status='Em andamento N2';persist();location.reload()}}
         else if(issue.status==='Em andamento N2'){menu.innerHTML='<button id="close">Transitar para Fechado</button>';document.getElementById('close').onclick=()=>{
           const dialog=document.createElement('dialog');dialog.setAttribute('role','dialog');dialog.innerHTML=`<h2>Transitar para Fechado</h2><label for="resolution">Resolução do chamado</label><textarea id="resolution"></textarea><button id="reply" type="button">Reply to customer</button><label for="public">Comentário público</label><textarea id="public"></textarea><label for="team">Equipe</label><select id="team"><option>Selecione</option><option>Field Services</option></select><button id="confirm">Transitar para Fechado</button>`;document.body.appendChild(dialog);dialog.showModal();
           document.getElementById('reply').onclick=()=>dialog.dataset.public='true';
@@ -403,9 +467,12 @@ static class Fixture
           document.getElementById('status').textContent='Fechado';if(issueKey.endsWith('1'))dialog.close();
           const response=await fetch('/fixture/close',{method:'POST'});if(!response.ok){document.getElementById('status').textContent=issue.status;if(!dialog.open)dialog.showModal();return}issue.resolution=resolution;issue.comment=comment;issue.team=team;issue.commentCount++;issue.status='Fechado';persist();location.reload()}
         }};
+        },transitionDelayMs);
       }
       }
     }
     </script></body></html>
-    """.Replace("__HIDE_PUBLIC__", hidePublic ? "true" : "false").Replace("__WRONG_LATEST_RESOLUTION__", wrongLatestResolution ? "true" : "false");
+    """.Replace("__HIDE_PUBLIC__", hidePublic ? "true" : "false").Replace("__WRONG_LATEST_RESOLUTION__", wrongLatestResolution ? "true" : "false")
+        .Replace("__TRANSITION_DELAY_MS__", transitionDelayMs.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        .Replace("__MISSING_TRANSITION__", missingTransition ? "true" : "false").Replace("__AMBIGUOUS_TRANSITION__", ambiguousTransition ? "true" : "false");
 }

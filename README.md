@@ -159,7 +159,7 @@ Se uma abertura foi enviada sem o número do chamado, informe o chamado existent
 
 Os testes do navegador usam páginas locais controladas. Os projetos de teste são executáveis acionados pelo script `Test.ps1`.
 
-A publicação da versão 1.0.0 gera `output/release/1.0.0/Vistora/` e `Vistora-1.0.0-Windows-x64.zip` na mesma pasta de versão. Extraia o ZIP inteiro e abra `Vistora.exe`. O runtime .NET acompanha o pacote; o Microsoft Edge precisa estar instalado. Mantenha os arquivos e a pasta `.playwright` junto ao executável. Para repetir uma publicação, escolha uma pasta de saída nova.
+A publicação da versão 1.0.1 gera `output/release/1.0.1/Vistora/` e `Vistora-1.0.1-Windows-x64.zip` na mesma pasta de versão. Extraia o ZIP inteiro e abra `Vistora.exe`. O runtime .NET acompanha o pacote; o Microsoft Edge precisa estar instalado. Mantenha os arquivos e a pasta `.playwright` junto ao executável. Para repetir uma publicação, escolha uma pasta de saída nova.
 
 ---
 

@@ -316,12 +316,14 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
         throw new InvalidOperationException($"Não foi possível confirmar a atribuição de {floor.IssueKey}.");
     }
 
-    private async Task OpenTransitionAsync(string action)
+    private async Task OpenTransitionAsync(string action, CancellationToken cancellationToken = default)
     {
         var direct = Page.GetByText(action, new() { Exact = true }).Filter(new() { Visible = true });
-        if (await DomControls.IsUniqueVisibleAsync(direct)) { await direct.ClickAsync(); return; }
-        await (await StatusButtonAsync()).ClickAsync();
-        await Ui.ClickAsync(action == "Iniciar Atendimento" ? "issue.start" : "issue.close", [action]);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await DomControls.IsUniqueVisibleAsync(direct))
+            await (await StatusButtonAsync(cancellationToken)).ClickAsync();
+        await Ui.ClickAsync(action == "Iniciar Atendimento" ? "issue.start" : "issue.close", [action],
+            waitTimeout: TimeSpan.FromSeconds(settings.TimeoutSeconds), cancellationToken: cancellationToken);
     }
 
     public async Task StartAsync(VisitRun run, FloorRun floor)
@@ -338,9 +340,9 @@ public sealed class EdgeJiraAutomation(LocalStore store) : IJiraAutomation
     public async Task PrepareCloseAsync(VisitRun run, FloorRun floor, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!string.Equals(await StatusAsync(), "Em andamento N2", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(await StatusAsync(cancellationToken), "Em andamento N2", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"{floor.IssueKey}: confira o início do atendimento antes do fechamento.");
-        await OpenTransitionAsync("Transitar para Fechado");
+        await OpenTransitionAsync("Transitar para Fechado", cancellationToken);
         var dialog = Page.GetByRole(AriaRole.Dialog).Filter(new() { Visible = true });
         await dialog.First.WaitForAsync();
         dialog = await DomControls.UniqueAsync(dialog, "Fechamento");
